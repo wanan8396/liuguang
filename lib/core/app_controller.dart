@@ -501,8 +501,9 @@ class AppController extends ChangeNotifier {
     ]);
     if (_liveLoading != null &&
         _liveLoadingKey == key &&
-        _liveLoadingGeneration == _liveGeneration)
+        _liveLoadingGeneration == _liveGeneration) {
       return _liveLoading!;
+    }
     late final Future<void> pending;
     pending = _loadLive().whenComplete(() {
       if (identical(_liveLoading, pending)) {

@@ -92,8 +92,9 @@ void main() {
       ],
     );
     http.handler = (url) async {
-      if (url.endsWith('fail'))
+      if (url.endsWith('fail')) {
         throw const AppHttpException('network', 'offline');
+      }
       if (url.endsWith('empty')) return _text(url, '#EXTM3U\n');
       return _text(
         url,

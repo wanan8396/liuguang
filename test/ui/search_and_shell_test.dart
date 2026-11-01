@@ -25,8 +25,7 @@ class _MemorySettings extends AppStore {
 }
 
 class _FakeController extends AppController {
-  _FakeController({bool sources = false, int sourceCount = 5, AppStore? store})
-    : super(store: store) {
+  _FakeController({bool sources = false, int sourceCount = 5, super.store}) {
     if (sources) {
       repositories = [
         for (var i = 0; i < sourceCount; i++)
