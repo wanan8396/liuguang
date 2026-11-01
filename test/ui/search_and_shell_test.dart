@@ -91,7 +91,7 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(home: SearchPage(controller: controller)),
     );
-    await tester.tap(find.text('已启用源聚合'));
+    await tester.tap(find.text('全部'));
     await tester.enterText(find.byType(TextField), '影片');
     await tester.tap(find.byTooltip('搜索'));
     await tester.pumpAndSettle();
@@ -113,7 +113,7 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(home: SearchPage(controller: controller)),
       );
-      await tester.tap(find.text('已启用源聚合'));
+      await tester.tap(find.text('全部'));
       await tester.enterText(find.byType(TextField), '影片');
       await tester.tap(find.byTooltip('搜索'));
       await tester.pump();
