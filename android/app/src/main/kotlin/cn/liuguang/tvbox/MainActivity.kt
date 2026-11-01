@@ -15,6 +15,10 @@ class MainActivity : FlutterActivity() {
         sourceEngine = SourceEnginePlugin.register(flutterEngine, this)
         sourceEngineOwner = flutterEngine
     }
+    override fun onFlutterUiDisplayed() {
+        super.onFlutterUiDisplayed()
+        android.util.Log.i("LiuguangStartup", "flutter_first_frame")
+    }
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
         if (sourceEngineOwner === flutterEngine) {
             sourceEngine?.close()

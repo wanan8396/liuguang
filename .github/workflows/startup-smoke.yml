@@ -1,0 +1,77 @@
+name: Release startup smoke
+
+on:
+  push:
+    branches: [main, 'fix/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: startup-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-startup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        api: [35, 24]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with:
+          channel: stable
+          flutter-version: '3.47.8'
+          cache: true
+      - name: Prepare Android release build
+        run: |
+          sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358'
+          flutter precache --android
+          flutter pub get --enforce-lockfile
+          printf 'sdk.dir=%s\nflutter.sdk=%s\n' "${ANDROID_SDK_ROOT:-$ANDROID_HOME}" "$FLUTTER_ROOT" > android/local.properties
+      - name: Build actual application release for emulator
+        run: |
+          flutter build apk --release --split-per-abi --target-platform android-x64
+          apk=build/app/outputs/flutter-apk/app-x86_64-release.apk
+          unzip -Z1 "$apk" > apk-entries.txt
+          grep -q '^lib/x86_64/libflutter.so$' apk-entries.txt
+          grep -q '^lib/x86_64/libapp.so$' apk-entries.txt
+          grep -q '^lib/x86_64/libmpv.so$' apk-entries.txt
+          if grep -qE '^lib/(arm64-v8a|armeabi-v7a)/' apk-entries.txt; then exit 1; fi
+      - name: Enable hosted-runner KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install and cold-start complete release APK
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: ${{ matrix.api }}
+          target: default
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: bash .github/scripts/cold-start.sh build/app/outputs/flutter-apk/app-x86_64-release.apk artifacts/startup-api-${{ matrix.api }}
+      - name: Upload startup evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-startup-api-${{ matrix.api }}-${{ github.sha }}
+          path: artifacts/startup-api-${{ matrix.api }}/
+          if-no-files-found: warn
+          retention-days: 14
