@@ -86,6 +86,8 @@ jobs:
         run: ./gradlew :source_engine:testDebugUnitTest --no-daemon --max-workers=2 --console=plain
       - name: Build development-signed ARM64 APK
         run: flutter build apk --release --split-per-abi --target-platform android-arm64
+      - name: Verify dynamic-plugin ABI in final minified APK
+        run: python3 -I .github/scripts/check-plugin-abi.py build/app/outputs/flutter-apk/app-arm64-v8a-release.apk --report artifacts/apk/plugin-abi.json
       - name: Verify APK and record digest
         run: |
           mkdir -p artifacts/apk

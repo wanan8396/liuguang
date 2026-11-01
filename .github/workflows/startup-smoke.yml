@@ -52,6 +52,7 @@ jobs:
           grep -q '^lib/x86_64/libapp.so$' apk-entries.txt
           grep -q '^lib/x86_64/libmpv.so$' apk-entries.txt
           if grep -qE '^lib/(arm64-v8a|armeabi-v7a)/' apk-entries.txt; then exit 1; fi
+          python3 -I .github/scripts/check-plugin-abi.py "$apk" --report artifacts/startup-api-${{ matrix.api }}/plugin-abi.json
       - name: Enable hosted-runner KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules

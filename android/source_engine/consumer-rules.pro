@@ -1,5 +1,13 @@
 -keep class com.github.catvod.** { *; }
 -keep class com.fongmi.quickjs.** { *; }
+# Downloaded DEX plugins link against these host APIs by their original names.
+# R8 cannot see those external references while shrinking the application.
+-keep class okhttp3.** { *; }
+-keep class okio.** { *; }
+-keep class com.google.gson.** { *; }
+-keep class org.jsoup.** { *; }
+-keep class kotlin.** { *; }
+-keep class com.orhanobut.logger.** { *; }
 -keepclasseswithmembernames,includedescriptorclasses class * { native <methods>; }
 -keepattributes Signature,*Annotation*,InnerClasses,EnclosingMethod
 -dontwarn com.dylibso.**
