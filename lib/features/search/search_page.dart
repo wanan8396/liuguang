@@ -27,8 +27,10 @@ class _SearchPageState extends State<SearchPage> {
   bool _all = false, _busy = false, _searched = false;
   int _generation = 0, _done = 0, _total = 0, _page = 1, _pageCount = 1;
   String _keyword = '';
+  String? _siteFilter;
   TvConfig? _config;
   Site? _site;
+
   void _cancel() {
     _generation++;
     if (_busy) widget.controller.cancelSearch();
@@ -44,6 +46,7 @@ class _SearchPageState extends State<SearchPage> {
       _items.clear();
       _errors.clear();
       _page = 1;
+      _siteFilter = null;
       _keyword = _input.text.trim();
       _config = c.currentConfig;
       _site = c.currentSite;
@@ -53,9 +56,7 @@ class _SearchPageState extends State<SearchPage> {
     if (_all) {
       for (final config in c.configs) {
         for (final site in c.enabledSites(config)) {
-          if (site.searchable) {
-            targets.add((config, site));
-          }
+          if (site.searchable) targets.add((config, site));
         }
       }
     } else if (_config != null && _site != null) {
@@ -94,12 +95,27 @@ class _SearchPageState extends State<SearchPage> {
       }
     }
 
-    // Three workers bound network/plugin pressure without losing provenance.
+    // 三个并发在保证来源可追溯的前提下，限制网络与插件压力。
     await Future.wait(
       List.generate(targets.length.clamp(0, 3), (_) => worker()),
     );
     if (mounted && generation == _generation) setState(() => _busy = false);
   }
+
+  /// 按来源汇总，供左侧来源筛选栏使用。
+  List<(String, int)> get _sources {
+    final counts = <String, int>{};
+    for (final item in _items) {
+      counts[item.site.name] = (counts[item.site.name] ?? 0) + 1;
+    }
+    final entries = counts.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    return [for (final e in entries) (e.key, e.value)];
+  }
+
+  List<_SearchResult> get _visible => _siteFilter == null
+      ? _items
+      : _items.where((item) => item.site.name == _siteFilter).toList();
 
   @override
   void dispose() {
@@ -110,137 +126,369 @@ class _SearchPageState extends State<SearchPage> {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: TextField(
-        controller: _input,
-        autofocus: true,
-        textInputAction: TextInputAction.search,
-        onSubmitted: (_) => _search(),
-        decoration: const InputDecoration(
-          hintText: '搜索电影、剧集、综艺',
-          isDense: true,
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final sources = _sources;
+    final visible = _visible;
+    return Scaffold(
+      appBar: AppBar(
+        titleSpacing: 0,
+        title: TextField(
+          controller: _input,
+          autofocus: true,
+          textInputAction: TextInputAction.search,
+          onSubmitted: (_) => _search(),
+          decoration: InputDecoration(
+            hintText: '搜索电影、剧集、综艺',
+            isDense: true,
+            filled: true,
+            fillColor: scheme.surfaceContainerHighest.withValues(alpha: .6),
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 16,
+              vertical: 10,
+            ),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(22),
+              borderSide: BorderSide.none,
+            ),
+          ),
+        ),
+        actions: [
+          IconButton(
+            tooltip: _busy ? '取消搜索' : '搜索',
+            onPressed: _busy ? _cancel : _search,
+            icon: Icon(_busy ? Icons.close : Icons.search),
+          ),
+          const SizedBox(width: 4),
+        ],
+      ),
+      body: Column(
+        children: [
+          if (_busy) const LinearProgressIndicator(minHeight: 2),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
+            child: Row(
+              children: [
+                Text(
+                  _searched ? '搜索($_done/$_total)' : '选择搜索范围',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+                const Spacer(),
+                Flexible(
+                  child: SegmentedButton<bool>(
+                    style: const ButtonStyle(
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    segments: const [
+                      ButtonSegment(value: false, label: Text('当前源')),
+                      ButtonSegment(value: true, label: Text('全部')),
+                    ],
+                    selected: {_all},
+                    onSelectionChanged: _busy
+                        ? null
+                        : (value) => setState(() => _all = value.first),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (_errors.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: ExpansionTile(
+                tilePadding: EdgeInsets.zero,
+                title: Text(
+                  '${_errors.length} 个站点提示',
+                  style: TextStyle(color: scheme.error, fontSize: 13),
+                ),
+                children: [
+                  for (final error in _errors)
+                    Padding(
+                      padding: const EdgeInsets.all(8),
+                      child: SelectableText(
+                        error,
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          Expanded(
+            child: !_searched
+                ? const Center(
+                    child: EmptyState(
+                      title: '寻找下一段好时光',
+                      message: '输入关键词，搜索当前内容源或聚合所有已启用站点。',
+                      icon: Icons.search,
+                    ),
+                  )
+                : visible.isEmpty && !_busy
+                ? const Center(
+                    child: EmptyState(
+                      title: '没有找到相关影片',
+                      message: '试试其他关键词或内容源。',
+                    ),
+                  )
+                : Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (sources.length > 1)
+                        _SourceRail(
+                          sources: sources,
+                          selected: _siteFilter,
+                          onSelect: (value) =>
+                              setState(() => _siteFilter = value),
+                        ),
+                      Expanded(
+                        child: ListView.separated(
+                          padding: const EdgeInsets.fromLTRB(12, 8, 16, 20),
+                          itemCount:
+                              visible.length + (_showMore ? 1 : 0),
+                          separatorBuilder: (_, _) =>
+                              const SizedBox(height: 10),
+                          itemBuilder: (context, index) {
+                            if (index >= visible.length) {
+                              return Padding(
+                                padding: const EdgeInsets.all(12),
+                                child: OutlinedButton(
+                                  onPressed: () => _search(more: true),
+                                  child: const Text('加载更多'),
+                                ),
+                              );
+                            }
+                            final result = visible[index];
+                            return _ResultCard(
+                              result: result,
+                              onTap: () => openDetail(
+                                context,
+                                widget.controller,
+                                result.vod,
+                                result.config,
+                                result.site,
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  bool get _showMore =>
+      !_all && !_busy && _items.isNotEmpty && _page < _pageCount;
+}
+
+/// 左侧来源栏：与截图一致的窄列，每项显示来源名与命中数量。
+class _SourceRail extends StatelessWidget {
+  const _SourceRail({
+    required this.sources,
+    required this.selected,
+    required this.onSelect,
+  });
+  final List<(String, int)> sources;
+  final String? selected;
+  final ValueChanged<String?> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return SizedBox(
+      width: 108,
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(12, 8, 0, 20),
+        children: [
+          _RailItem(
+            label: '全部显示',
+            count: null,
+            active: selected == null,
+            color: scheme.primary,
+            onTap: () => onSelect(null),
+          ),
+          for (final (name, count) in sources)
+            _RailItem(
+              label: name,
+              count: count,
+              active: selected == name,
+              color: scheme.primary,
+              onTap: () => onSelect(name),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RailItem extends StatelessWidget {
+  const _RailItem({
+    required this.label,
+    required this.count,
+    required this.active,
+    required this.color,
+    required this.onTap,
+  });
+  final String label;
+  final int? count;
+  final bool active;
+  final Color color;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(bottom: 8),
+    child: Material(
+      color: active
+          ? color
+          : Theme.of(context).colorScheme.surfaceContainerHighest.withValues(
+              alpha: .55,
+            ),
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 12,
+                  height: 1.25,
+                  fontWeight: active ? FontWeight.w600 : FontWeight.w400,
+                  color: active
+                      ? Theme.of(context).colorScheme.onPrimary
+                      : Theme.of(context).colorScheme.onSurface,
+                ),
+              ),
+              if (count != null) ...[
+                const SizedBox(height: 3),
+                Text(
+                  '$count',
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: active
+                        ? Theme.of(
+                            context,
+                          ).colorScheme.onPrimary.withValues(alpha: .8)
+                        : Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ],
+          ),
         ),
       ),
-      actions: [
-        IconButton(
-          tooltip: _busy ? '取消搜索' : '搜索',
-          onPressed: _busy ? _cancel : _search,
-          icon: Icon(_busy ? Icons.close : Icons.search),
-        ),
-      ],
     ),
-    body: Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+  );
+}
+
+/// 横向图片卡片：左侧海报，右侧标题／更新信息／来源标签。
+class _ResultCard extends StatelessWidget {
+  const _ResultCard({required this.result, required this.onTap});
+  final _SearchResult result;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final vod = result.vod;
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(10),
           child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              SizedBox(
+                width: 92,
+                height: 130,
+                child: Poster(
+                  url: vod.pic,
+                  headers: imageHeaders(result.config, result.site, vod),
+                ),
+              ),
+              const SizedBox(width: 12),
               Expanded(
-                child: SegmentedButton<bool>(
-                  segments: const [
-                    ButtonSegment(value: false, label: Text('当前源')),
-                    ButtonSegment(value: true, label: Text('已启用源聚合')),
-                  ],
-                  selected: {_all},
-                  onSelectionChanged: _busy
-                      ? null
-                      : (value) => setState(() => _all = value.first),
+                child: SizedBox(
+                  height: 130,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        vod.name,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        vod.remarks.isNotEmpty
+                            ? vod.remarks
+                            : [vod.year, vod.area]
+                                  .where((e) => e.isNotEmpty)
+                                  .join(' · '),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                      const Spacer(),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text.rich(
+                              TextSpan(
+                                children: [
+                                  TextSpan(
+                                    text: '来源：',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: scheme.onSurfaceVariant,
+                                    ),
+                                  ),
+                                  TextSpan(
+                                    text: result.site.name,
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                      color: scheme.primary,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          Icon(
+                            Icons.chevron_right,
+                            size: 18,
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ],
           ),
         ),
-        if (_busy) ...[
-          const LinearProgressIndicator(minHeight: 2),
-          Padding(
-            padding: const EdgeInsets.all(8),
-            child: Text(
-              '搜索中 $_done / $_total · 最多 3 个并发',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-          ),
-        ],
-        if (_errors.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: ExpansionTile(
-              title: Text(
-                '${_errors.length} 个站点提示',
-                style: TextStyle(color: Theme.of(context).colorScheme.error),
-              ),
-              children: [
-                for (final error in _errors)
-                  Padding(
-                    padding: const EdgeInsets.all(8),
-                    child: SelectableText(error),
-                  ),
-              ],
-            ),
-          ),
-        Expanded(
-          child: !_searched
-              ? const Center(
-                  child: EmptyState(
-                    title: '寻找下一段好时光',
-                    message: '输入关键词，搜索当前内容源或聚合所有已启用站点。',
-                    icon: Icons.search,
-                  ),
-                )
-              : _items.isEmpty && !_busy
-              ? const Center(
-                  child: EmptyState(title: '没有找到相关影片', message: '试试其他关键词或内容源。'),
-                )
-              : CustomScrollView(
-                  slivers: [
-                    SliverPadding(
-                      padding: const EdgeInsets.all(16),
-                      sliver: SliverGrid(
-                        gridDelegate:
-                            const SliverGridDelegateWithFixedCrossAxisCount(
-                              crossAxisCount: 3,
-                              crossAxisSpacing: 12,
-                              mainAxisSpacing: 18,
-                              childAspectRatio: .55,
-                            ),
-                        delegate: SliverChildBuilderDelegate((context, index) {
-                          final result = _items[index];
-                          return VodTile(
-                            vod: result.vod,
-                            source: result.site.name,
-                            headers: imageHeaders(
-                              result.config,
-                              result.site,
-                              result.vod,
-                            ),
-                            onTap: () => openDetail(
-                              context,
-                              widget.controller,
-                              result.vod,
-                              result.config,
-                              result.site,
-                            ),
-                          );
-                        }, childCount: _items.length),
-                      ),
-                    ),
-                    if (!_all &&
-                        !_busy &&
-                        _items.isNotEmpty &&
-                        _page < _pageCount)
-                      SliverToBoxAdapter(
-                        child: Padding(
-                          padding: const EdgeInsets.all(20),
-                          child: OutlinedButton(
-                            onPressed: () => _search(more: true),
-                            child: const Text('加载更多'),
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-        ),
-      ],
-    ),
-  );
+      ),
+    );
+  }
 }

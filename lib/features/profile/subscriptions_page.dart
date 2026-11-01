@@ -5,6 +5,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../../core/app_controller.dart';
 import '../../ui/components.dart';
+import '../discovery/line_discovery_page.dart';
 
 const defaultSubscription = 'http://z.qiqiv.cn/123.txt';
 
@@ -103,6 +104,20 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
               onPressed: waiting ? null : _scan,
               icon: const Icon(Icons.qr_code_scanner),
             ),
+            if (!widget.live)
+              IconButton(
+                tooltip: '全网发现线路',
+                onPressed: waiting
+                    ? null
+                    : () => Navigator.push(
+                        context,
+                        MaterialPageRoute<void>(
+                          builder: (_) =>
+                              LineDiscoveryPage(controller: c),
+                        ),
+                      ),
+                icon: const Icon(Icons.travel_explore),
+              ),
             if (!widget.live)
               IconButton(
                 tooltip: '导入本地配置',

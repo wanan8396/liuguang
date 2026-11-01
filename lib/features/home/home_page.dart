@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../core/app_controller.dart';
 import '../../ui/components.dart';
 import '../detail/detail_page.dart';
+import '../profile/library_page.dart';
 import '../search/search_page.dart';
 
 class HomePage extends StatefulWidget {
@@ -73,6 +74,17 @@ class _HomePageState extends State<HomePage> {
             ),
           ),
           actions: [
+            IconButton(
+              tooltip: '观看历史',
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute<void>(
+                  builder: (_) =>
+                      LibraryPage(controller: c, history: true),
+                ),
+              ),
+              icon: const Icon(Icons.history),
+            ),
             IconButton(
               tooltip: '搜索影片',
               onPressed: () => Navigator.push(
