@@ -8,17 +8,25 @@ import android.widget.EditText
 import org.json.JSONObject
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.function.Function
 
 /** Minimal foreground text/input/select dialogs; never grants permissions or installs SDKs. */
 class PluginDialogHost(private val activity: Activity): AutoCloseable {
+    companion object { const val CANCEL_JSON = "{\"action\":\"cancel\"}" }
+    private val closed=AtomicBoolean()
     private val main=Handler(Looper.getMainLooper())
     private val active=ConcurrentHashMap<CompletableFuture<String>,AlertDialog>()
     fun show(options: String,action: Function<String,CompletableFuture<String>>?): CompletableFuture<String> {
         val future=CompletableFuture<String>()
         main.post {
             try {
-                check(!activity.isFinishing) { "No foreground activity" }
+                // Permission was captured by the Runtime entry point on the caller thread.
+                // Focus is a best-effort foreground check at display time, not a lifecycle guarantee.
+                if(closed.get() || activity.isFinishing || activity.isDestroyed || !activity.hasWindowFocus()) {
+                    future.complete(CANCEL_JSON)
+                    return@post
+                }
                 val o=JSONObject(options)
                 val input=EditText(activity).apply { setText(o.optString("value")); hint=o.optString("hint") }
                 val b=AlertDialog.Builder(activity).setTitle(o.optString("title","源插件")).setMessage(o.optString("message",o.optString("content")))
@@ -29,8 +37,8 @@ class PluginDialogHost(private val activity: Activity): AutoCloseable {
                     val event=JSONObject().put("action","confirm").put("value",input.text.toString()).toString()
                     if(action==null) future.complete(event) else action.apply(event).whenComplete { value,error -> if(error!=null) future.completeExceptionally(error) else future.complete(value ?: event) }
                 }
-                b.setNegativeButton(o.optString("negative","取消")) { _,_ -> future.complete(JSONObject().put("action","cancel").toString()) }
-                b.setOnCancelListener { future.complete(JSONObject().put("action","cancel").toString()) }
+                b.setNegativeButton(o.optString("negative","取消")) { _,_ -> future.complete(CANCEL_JSON) }
+                b.setOnCancelListener { future.complete(CANCEL_JSON) }
                 val dialog=b.create(); active[future]=dialog
                 future.whenComplete { _,_ -> main.post { active.remove(future)?.dismiss() } }
                 dialog.show()
@@ -38,5 +46,5 @@ class PluginDialogHost(private val activity: Activity): AutoCloseable {
         }
         return future
     }
-    override fun close() { active.keys.toList().forEach { it.cancel(false) }; main.post { active.values.forEach { it.dismiss() }; active.clear() } }
+    override fun close() { closed.set(true); active.keys.toList().forEach { it.cancel(false) }; main.post { active.values.forEach { it.dismiss() }; active.clear() } }
 }

@@ -7,6 +7,8 @@ import 'package:xml/xml.dart';
 import '../config/config_decoder.dart';
 import '../models/models.dart';
 import '../network/app_http_client.dart';
+import 'live_helper_sources.dart';
+export 'live_helper_sources.dart';
 
 class LiveException implements Exception {
   const LiveException(this.message);
@@ -19,6 +21,39 @@ class LiveRepository {
   LiveRepository(this.client, {this.maxDepth = 6});
   final AppHttpClient client;
   final int maxDepth;
+  final _helperLoads = <String, Future<List<LiveChannel>>>{};
+
+  /// Only requests playlist text. No media probing, scanning or background jobs.
+  /// Concurrent requests for the same group share a single bounded fetch chain.
+  Future<List<LiveChannel>> loadHelperSource(LiveHelperSource source) =>
+      _helperLoads.putIfAbsent(
+        source.id,
+        () => _loadHelperSource(source).whenComplete(() {
+          _helperLoads.remove(source.id);
+        }),
+      );
+
+  Future<List<LiveChannel>> _loadHelperSource(LiveHelperSource source) async {
+    final failures = <String>[];
+    for (final url in source.urls.toSet()) {
+      try {
+        final response = await client.fetch(url, headers: liveHelperHeaders);
+        final channels = parse(
+          decodeConfigText(_expandGzip(response.bytes)),
+          baseUrl: response.finalUrl,
+          headers: liveHelperHeaders,
+        );
+        if (channels.isEmpty) throw const LiveException('列表为空');
+        return channels;
+      } catch (failure) {
+        failures.add('$url: $failure');
+      }
+    }
+    throw LiveException('${source.name}：所有直连/备选列表失败\n${failures.join('\n')}');
+  }
+
+  List<LiveChannel> mergeChannels(List<LiveChannel> channels) =>
+      _merge(channels);
 
   Future<List<LiveChannel>> load(
     List<dynamic> lives, {
@@ -394,9 +429,8 @@ class LiveRepository {
       final programs = <EpgProgramme>[];
       for (final value in list) {
         final item = jsonMap(value);
-        final start = DateTime.parse(
-          '${date}T${item['start']}:00+08:00',
-        ).toUtc();
+        final start = DateTime.parse('${date}T${item['start']}:00+08:00')
+            .toUtc();
         var end = DateTime.parse('${date}T${item['end']}:00+08:00').toUtc();
         if (!end.isAfter(start)) end = end.add(const Duration(days: 1));
         programs.add(

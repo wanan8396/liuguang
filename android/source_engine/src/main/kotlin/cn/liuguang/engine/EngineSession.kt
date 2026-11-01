@@ -35,6 +35,7 @@ open class EngineSession(val context: Context, val config: JSONObject, val site:
         val jar = site.optString("jar").ifBlank { raw.optString("spider") }
         require(jar.isNotBlank()) { "No site jar or global spider specified for $key" }
         loader = loadJar(jar)
+        DexCompatibility.check(loader!!)
         try {
             val clz = loader!!.loadClass("com.github.catvod.spider.Init")
             clz.getMethod("init", Context::class.java).invoke(null, context.applicationContext)

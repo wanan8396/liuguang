@@ -30,7 +30,10 @@ const List<(String, String)> kSeedLines = [
   ('胖虎', 'https://notabug.org/imbig66/tv-spider-man/raw/master/配置/0801.json'),
   ('传说', 'https://chuanshuo.77blog.cn/tv.json'),
   ('宝盒接口', 'http://宝盒接口.top'),
-  ('高天流云', 'https://raw.githubusercontent.com/gaotianliuyun/gao/master/js.json'),
+  (
+    '高天流云',
+    'https://raw.githubusercontent.com/gaotianliuyun/gao/master/js.json',
+  ),
   ('多多聚合', 'https://raw.liucn.cc/box/dm.txt'),
   ('liucn-m', 'https://raw.liucn.cc/box/m.json'),
   ('gitee自建', 'https://gitee.com/lukei7/lib/raw/Luck/自建.json'),
@@ -96,23 +99,78 @@ const List<String> kDiscoveryPages = [
 ];
 
 const Set<String> _skipSuffixes = {
-  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.ico', '.css', '.js',
-  '.woff', '.woff2', '.ttf', '.eot', '.mp4', '.mp3', '.zip',
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.webp',
+  '.svg',
+  '.ico',
+  '.css',
+  '.js',
+  '.woff',
+  '.woff2',
+  '.ttf',
+  '.eot',
+  '.mp4',
+  '.mp3',
+  '.zip',
 };
 
 const List<String> _skipKeywords = [
-  'github.com/', 'gitlab.com/', 'gitee.com/', 'zhihu.com', 'bilibili',
-  'baidu.com', 'google.com', 'bing.com', 'youtube', 'douyin', 'weibo',
-  'taobao', 'jd.com', 'xiaomi.com', '360.cn', 'sohu', '163.com', 'sina.com',
-  'cloudflare', 'jsdelivr.net', 'unpkg.com', 'gravatar', 'w3.org',
-  'mozilla.org', 'jquery', 'bootstrap', 'miit.gov.cn', 'flowus.cn',
-  'allflow.cn', 'staticfile.org',
+  'github.com/',
+  'gitlab.com/',
+  'gitee.com/',
+  'zhihu.com',
+  'bilibili',
+  'baidu.com',
+  'google.com',
+  'bing.com',
+  'youtube',
+  'douyin',
+  'weibo',
+  'taobao',
+  'jd.com',
+  'xiaomi.com',
+  '360.cn',
+  'sohu',
+  '163.com',
+  'sina.com',
+  'cloudflare',
+  'jsdelivr.net',
+  'unpkg.com',
+  'gravatar',
+  'w3.org',
+  'mozilla.org',
+  'jquery',
+  'bootstrap',
+  'miit.gov.cn',
+  'flowus.cn',
+  'allflow.cn',
+  'staticfile.org',
 ];
 
 const List<String> _lineKeywords = [
-  '/tv', '/box', '/api', '.json', '.txt', '/dc', 'kstore', 'jundie',
-  'catvod', 'tvbox', 'yingm', 'liucn', 'nxog', 'tspider', '/dm/', 'dcang',
-  '仓库', '线路', '接口', '配置',
+  '/tv',
+  '/box',
+  '/api',
+  '.json',
+  '.txt',
+  '/dc',
+  'kstore',
+  'jundie',
+  'catvod',
+  'tvbox',
+  'yingm',
+  'liucn',
+  'nxog',
+  'tspider',
+  '/dm/',
+  'dcang',
+  '仓库',
+  '线路',
+  '接口',
+  '配置',
 ];
 
 const String _ua = 'okhttp/4.12.0';
@@ -230,16 +288,30 @@ class LineScanner {
   bool _running = false;
   Completer<void>? _done;
   DateTime? _stopAt;
+  int _generation = 0;
+  Timer? _deadlineTimer;
+  final Set<CancelToken> _tokens = {};
+  bool _active(int generation) => _running && _generation == generation;
   void Function(ScanProgress)? onProgress;
 
   bool get running => _running;
 
-  void cancel() {
+  void cancel() => _finish('已取消');
+
+  void _finish(String reason) {
+    if (!_running) return;
     _running = false;
+    _generation++;
+    _deadlineTimer?.cancel();
+    _deadlineTimer = null;
     _stopAt = null;
+    for (final token in _tokens.toList()) {
+      token.cancel(reason);
+    }
+    _tokens.clear();
     for (final node in _queue) {
       node.status = 'fail';
-      node.error = '已取消';
+      node.error = reason;
     }
     _queue.clear();
     final done = _done;
@@ -256,7 +328,9 @@ class LineScanner {
   Future<void> start() async {
     if (_running) return;
     _running = true;
+    final generation = ++_generation;
     _queue.clear();
+    _hostBusy.clear();
     roots.clear();
     _cache.clear();
     _pending = 0;
@@ -266,44 +340,58 @@ class LineScanner {
     _stopAt = DateTime.now().add(deadline);
     final done = Completer<void>();
     _done = done;
+    _deadlineTimer = Timer(deadline, () {
+      if (_active(generation)) _finish('超过总时间预算');
+    });
 
     _report('搜索线路', 0, kDiscoveryPages.length + 1, '收集公开入口');
     final candidates = <(String, String)>[...kSeedLines];
     final seen = <String>{};
-    for (final seed in kSeedLines) {
-      final normalized = _tryNormalize(seed.$2);
-      if (normalized != null) seen.add(normalized);
-    }
 
+    if (!_active(generation)) return;
     var pageIndex = 0;
     final pages = kDiscoveryPages.map((page) async {
-      final found = await _discover(page);
+      final found = await _discover(page, generation);
+      if (!_active(generation)) return;
       candidates.addAll(found);
       pageIndex++;
       _report(
         '搜索线路',
         pageIndex,
         kDiscoveryPages.length + 1,
-        found.isEmpty ? page : '${page.split('/').length > 2 ? page.split('/')[2] : page} +${found.length}',
+        found.isEmpty
+            ? page
+            : '${page.split('/').length > 2 ? page.split('/')[2] : page} +${found.length}',
       );
     }).toList();
-    await Future.wait(pages);
+    await Future.any<void>([Future.wait(pages).then((_) {}), done.future]);
+    if (!_active(generation)) return;
 
     for (final candidate in candidates) {
-      if (!_running || _budget <= 0) break;
+      if (!_running) break;
       final normalized = _tryNormalize(candidate.$2);
       if (normalized == null || !seen.add(normalized)) continue;
-      _budget--;
       final node = ScanNode(url: normalized, name: candidate.$1);
       roots.add(node);
+      if (_budget <= 0) {
+        node.status = 'fail';
+        node.error = '超过节点预算';
+        continue;
+      }
+      _budget--;
       _pending++;
       _queue.add(node);
     }
 
     _report('验证线路', 0, _pending, '共 $_pending 条候选');
-    _pump();
+    if (!_active(generation)) return;
+    _pump(generation);
     await done.future;
-    _running = false;
+    if (_active(generation)) {
+      _running = false;
+      _deadlineTimer?.cancel();
+      _deadlineTimer = null;
+    }
   }
 
   void _report(String stage, int done, int total, String info) {
@@ -316,7 +404,8 @@ class LineScanner {
     }
   }
 
-  void _pump() {
+  void _pump(int generation) {
+    if (!_active(generation)) return;
     while (_running && _queue.isNotEmpty && _inFlight < poolSize) {
       final node = _queue.removeAt(0);
       if (DateTime.now().isAfter(_stopAt!)) {
@@ -326,7 +415,7 @@ class LineScanner {
         continue;
       }
       _inFlight++;
-      unawaited(_run(node));
+      unawaited(_run(node, generation));
     }
     if (_pending <= 0) {
       final done = _done;
@@ -334,17 +423,21 @@ class LineScanner {
     }
   }
 
-  Future<void> _run(ScanNode node) async {
+  Future<void> _run(ScanNode node, int generation) async {
     try {
-      await _process(node);
+      await _process(node, generation);
     } catch (error) {
-      node.status = 'fail';
-      node.error = '$error';
+      if (_active(generation)) {
+        node.status = 'fail';
+        node.error = '$error';
+      }
     } finally {
-      _inFlight--;
-      _pending--;
-      _emit();
-      _pump();
+      if (_active(generation)) {
+        _inFlight--;
+        _pending--;
+        _emit();
+        _pump(generation);
+      }
     }
   }
 
@@ -354,7 +447,7 @@ class LineScanner {
     _report('验证线路', _completed, _completed + _pending, '');
   }
 
-  Future<void> _process(ScanNode node) async {
+  Future<void> _process(ScanNode node, int generation) async {
     if (!_running) {
       node.status = 'fail';
       node.error = '已取消';
@@ -378,12 +471,20 @@ class LineScanner {
     final host = Uri.parse(node.url).host;
     var probe = await _withHostSlot(
       host,
-      () => _fetch(node.url, _timeoutFor(node.depth)),
+      generation,
+      () => _fetch(node.url, _timeoutFor(node.depth), generation),
     );
+    if (!_active(generation)) return;
     // 首轮明显偏慢时给一次更宽松的重测机会，避免把抖动当成慢站。
     if (probe.ok && probe.totalMs > 3000 && _running) {
-      final retry = await _withHostSlot(host, () => _fetch(node.url, 14000));
-      if (retry.ok && (retry.totalMs < probe.totalMs || retry.ttfbMs < probe.ttfbMs)) {
+      final retry = await _withHostSlot(
+        host,
+        generation,
+        () => _fetch(node.url, 14000, generation),
+      );
+      if (!_active(generation)) return;
+      if (retry.ok &&
+          (retry.totalMs < probe.totalMs || retry.ttfbMs < probe.ttfbMs)) {
         probe = retry;
       }
     }
@@ -423,7 +524,7 @@ class LineScanner {
       return;
     }
     final children = childrenOf(raw, node.kind);
-    for (final child in children.take(100)) {
+    for (final child in children) {
       if (!_running) break;
       final resolved = _tryNormalize(
         Uri.parse(node.url).resolve(child.$2.trim()).toString(),
@@ -449,28 +550,37 @@ class LineScanner {
     }
   }
 
-  Future<T> _withHostSlot<T>(String host, Future<T> Function() task) async {
+  Future<_Probe> _withHostSlot(
+    String host,
+    int generation,
+    Future<_Probe> Function() task,
+  ) async {
     var spins = 0;
-    while (_running && (_hostBusy[host] ?? 0) >= perHostLimit) {
+    while (_active(generation) && (_hostBusy[host] ?? 0) >= perHostLimit) {
       await Future<void>.delayed(const Duration(milliseconds: 80));
-      if (++spins > 150) break;
+      if (++spins > 150) return _Probe.fail('等待主机并发槽超时');
     }
+    if (!_active(generation)) return _Probe.fail('已取消');
     _hostBusy[host] = (_hostBusy[host] ?? 0) + 1;
     try {
       return await task();
     } finally {
-      final left = (_hostBusy[host] ?? 1) - 1;
-      if (left <= 0) {
-        _hostBusy.remove(host);
-      } else {
-        _hostBusy[host] = left;
+      if (_active(generation)) {
+        final left = (_hostBusy[host] ?? 1) - 1;
+        if (left <= 0) {
+          _hostBusy.remove(host);
+        } else {
+          _hostBusy[host] = left;
+        }
       }
     }
   }
 
-  Future<_Probe> _fetch(String url, int timeoutMs) async {
+  Future<_Probe> _fetch(String url, int timeoutMs, int generation) async {
     final watch = Stopwatch()..start();
     final token = CancelToken();
+    if (!_active(generation)) return _Probe.fail('已取消');
+    _tokens.add(token);
     try {
       final response = await _dio
           .getUri<ResponseBody>(
@@ -506,17 +616,27 @@ class LineScanner {
       final builder = BytesBuilder(copy: false);
       var ttfb = headersMs;
       var first = true;
-      await for (final chunk in body.stream) {
-        if (first) {
-          ttfb = watch.elapsedMilliseconds;
-          first = false;
+      final iterator = StreamIterator(body.stream);
+      try {
+        while (await Future.any<bool>([
+          iterator.moveNext(),
+          token.whenCancel.then((_) => false),
+        ])) {
+          final chunk = iterator.current;
+          if (first) {
+            ttfb = watch.elapsedMilliseconds;
+            first = false;
+          }
+          builder.add(chunk);
+          if (builder.length > maxBytes) {
+            token.cancel('size limit');
+            return _Probe.fail('响应超过大小限制', ttfbMs: ttfb);
+          }
         }
-        builder.add(chunk);
-        if (builder.length > maxBytes) {
-          token.cancel('size limit');
-          return _Probe.fail('响应超过大小限制', ttfbMs: ttfb);
-        }
+      } finally {
+        unawaited(iterator.cancel());
       }
+      if (token.isCancelled) return _Probe.fail('已取消');
       return _Probe(
         ok: true,
         bytes: builder.takeBytes(),
@@ -529,6 +649,8 @@ class LineScanner {
       return _Probe.fail('超时');
     } catch (error) {
       return _Probe.fail('$error');
+    } finally {
+      _tokens.remove(token);
     }
   }
 
@@ -544,12 +666,16 @@ class LineScanner {
     };
   }
 
-  Future<List<(String, String)>> _discover(String page) async {
+  Future<List<(String, String)>> _discover(String page, int generation) async {
     final found = <(String, String)>[];
     if (!_running) return found;
     final host = Uri.parse(page).host;
-    final probe = await _withHostSlot(host, () => _fetch(page, 6000));
-    if (!probe.ok || probe.bytes.isEmpty) return found;
+    final probe = await _withHostSlot(
+      host,
+      generation,
+      () => _fetch(page, 6000, generation),
+    );
+    if (!_active(generation) || !probe.ok || probe.bytes.isEmpty) return found;
     String text;
     try {
       text = utf8.decode(probe.bytes, allowMalformed: true);
@@ -582,13 +708,15 @@ class LineScanner {
 List<String> extractConfigUrls(String text) {
   final out = <String>[];
   if (text.isEmpty) return out;
-  final pattern = RegExp(r'''https?://[^\s"'<>()\[\]]+''', caseSensitive: false);
+  final pattern = RegExp(
+    r'''https?://[^\s"'<>()\[\]]+''',
+    caseSensitive: false,
+  );
   for (final match in pattern.allMatches(text)) {
     if (out.length >= 60) break;
-    final trimmed = match.group(0)!.replaceAll(
-      RegExp(r'''[.,;:，。；：、)\]"}>]+$'''),
-      '',
-    );
+    final trimmed = match
+        .group(0)!
+        .replaceAll(RegExp(r'''[.,;:，。；：、)\]"}>]+$'''), '');
     final lower = trimmed.toLowerCase();
     if (!lower.startsWith('http')) continue;
     if (_skipSuffixes.any(lower.endsWith)) continue;
@@ -683,10 +811,10 @@ String gradeSpeed(int totalMs) {
 String buildImportConfig(List<ScanNode> nodes, {String? name}) {
   final urls = <Map<String, String>>[
     for (final node in nodes)
-      {'name': node.name.trim().isEmpty ? node.url : node.name.trim(), 'url': node.url},
+      {
+        'name': node.name.trim().isEmpty ? node.url : node.name.trim(),
+        'url': node.url,
+      },
   ];
-  return jsonEncode({
-    'name': name ?? '线路发现 ${urls.length} 条',
-    'urls': urls,
-  });
+  return jsonEncode({'name': name ?? '线路发现 ${urls.length} 条', 'urls': urls});
 }

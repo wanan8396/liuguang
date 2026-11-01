@@ -34,6 +34,90 @@ class _LivePageState extends State<LivePage> {
     if (mounted) setState(() => _loading = false);
   }
 
+  Future<void> _helperSources() async {
+    final selected = c.selectedLiveHelperSources.toSet();
+    final result = await showDialog<Set<String>>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, update) => AlertDialog(
+          title: const Text('接口助手直播源'),
+          content: SizedBox(
+            width: 560,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  '可选内置公开列表；不会替换已有订阅。直连失败后尝试备选（含第三方代理）。仅抓取列表，不扫描或验证媒体；可播性及授权请自行确认。',
+                ),
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    TextButton(
+                      onPressed: () => update(() {
+                        selected.addAll(['source-02', 'source-12']);
+                      }),
+                      child: const Text('添加推荐 2 组'),
+                    ),
+                    TextButton(
+                      onPressed: () => update(selected.clear),
+                      child: const Text('清空助手选择'),
+                    ),
+                  ],
+                ),
+                Flexible(
+                  child: SingleChildScrollView(
+                    child: Column(
+                      children: [
+                        for (final source in liveHelperSources)
+                          CheckboxListTile(
+                            contentPadding: EdgeInsets.zero,
+                            title: Text(source.name),
+                            subtitle: Text(source.description),
+                            value: selected.contains(source.id),
+                            onChanged: (value) => update(() {
+                              if (value == true) {
+                                selected.add(source.id);
+                              } else {
+                                selected.remove(source.id);
+                              }
+                            }),
+                            secondary: IconButton(
+                              tooltip: '仅选此助手源（保留用户订阅）',
+                              icon: const Icon(Icons.playlist_add),
+                              onPressed: () =>
+                                  Navigator.pop(dialogContext, {source.id}),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, selected),
+              child: Text('保存并加载（${selected.length} 组）'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (result == null || !mounted) return;
+    setState(() {
+      _loading = true;
+      _group = '全部';
+      _guides.clear();
+    });
+    await runUi(context, () => c.setLiveHelperSources(result));
+    if (mounted) setState(() => _loading = false);
+  }
+
   bool _favorite(LiveChannel channel) => c.store.liveFavorites.any(
     (item) =>
         item.name == channel.name &&
@@ -136,9 +220,8 @@ class _LivePageState extends State<LivePage> {
                     ListTile(
                       contentPadding: EdgeInsets.zero,
                       leading: Text(
-                        TimeOfDay.fromDateTime(
-                          programme.start.toLocal(),
-                        ).format(context),
+                        TimeOfDay.fromDateTime(programme.start.toLocal())
+                            .format(context),
                       ),
                       title: Text(programme.title),
                       subtitle: programme.description.isEmpty
@@ -187,6 +270,15 @@ class _LivePageState extends State<LivePage> {
         ),
         body: Column(
           children: [
+            ListTile(
+              leading: const Icon(Icons.playlist_add),
+              title: const Text('接口助手直播源'),
+              subtitle: Text(
+                '已选 ${c.selectedLiveHelperSources.length}/15 组 · 选择 / 添加 · 不替换已有订阅',
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: _loading ? null : _helperSources,
+            ),
             Padding(
               padding: const EdgeInsets.all(16),
               child: TextField(
@@ -231,8 +323,7 @@ class _LivePageState extends State<LivePage> {
                           const SizedBox(height: 40),
                           EmptyState(
                             title: _group == '收藏' ? '还没有收藏频道' : '暂无频道',
-                            message:
-                                '支持 M3U / TXT / JSON 直播订阅。\n在「我的 → 直播订阅」添加地址后刷新。',
+                            message: '支持 M3U / TXT / JSON 直播订阅。\n可选择上方助手源，或在「我的 → 直播订阅」添加地址。',
                             icon: Icons.live_tv,
                           ),
                         ],
@@ -257,9 +348,9 @@ class _LivePageState extends State<LivePage> {
                                 child: channel.logo.isEmpty
                                     ? Icon(
                                         Icons.live_tv,
-                                        color: Theme.of(
-                                          context,
-                                        ).colorScheme.primary,
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .primary,
                                       )
                                     : Poster(
                                         url: channel.logo,

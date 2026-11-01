@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../core/app_controller.dart';
+import '../../core/search/search_concurrency.dart';
+import '../../core/search/search_history.dart';
 import '../../ui/components.dart';
 import '../detail/detail_page.dart';
 
@@ -24,12 +26,39 @@ class _SearchPageState extends State<SearchPage> {
   final _input = TextEditingController();
   final _items = <_SearchResult>[];
   final _errors = <String>[];
-  bool _all = false, _busy = false, _searched = false;
-  int _generation = 0, _done = 0, _total = 0, _page = 1, _pageCount = 1;
+  bool _busy = false, _searched = false;
+  int _generation = 0, _done = 0, _total = 0;
+  late SearchHistorySession _historySession;
+  List<String> get _history => _historySession.history;
+  @override
+  void initState() {
+    super.initState();
+    _historySession = SearchHistorySession.forStore(widget.controller.store);
+    _historySession.addListener(_historyChanged);
+  }
+
+  @override
+  void didUpdateWidget(covariant SearchPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.controller.store, widget.controller.store)) {
+      _historySession.removeListener(_historyChanged);
+      _historySession = SearchHistorySession.forStore(widget.controller.store);
+      _historySession.addListener(_historyChanged);
+    }
+  }
+
+  void _historyChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _saveHistory(Future<void> operation) {
+    operation.catchError((Object error) {
+      if (mounted) showMessage(context, '保存搜索历史失败：$error');
+    });
+  }
+
   String _keyword = '';
   String? _siteFilter;
-  TvConfig? _config;
-  Site? _site;
 
   void _cancel() {
     _generation++;
@@ -37,30 +66,21 @@ class _SearchPageState extends State<SearchPage> {
     if (mounted) setState(() => _busy = false);
   }
 
-  Future<void> _search({bool more = false}) async {
+  Future<void> _search() async {
     if (_input.text.trim().isEmpty) return;
     _cancel();
     final generation = _generation;
     final c = widget.controller;
-    if (!more) {
-      _items.clear();
-      _errors.clear();
-      _page = 1;
-      _siteFilter = null;
-      _keyword = _input.text.trim();
-      _config = c.currentConfig;
-      _site = c.currentSite;
-    }
-    final requestedPage = more ? _page + 1 : 1;
+    _items.clear();
+    _errors.clear();
+    _siteFilter = null;
+    _keyword = _input.text.trim();
+    _saveHistory(_historySession.add(_keyword));
     final targets = <(TvConfig, Site)>[];
-    if (_all) {
-      for (final config in c.configs) {
-        for (final site in c.enabledSites(config)) {
-          if (site.searchable) targets.add((config, site));
-        }
+    for (final config in c.configs) {
+      for (final site in c.enabledSites(config)) {
+        if (site.searchable) targets.add((config, site));
       }
-    } else if (_config != null && _site != null) {
-      targets.add((_config!, _site!));
     }
     setState(() {
       _busy = true;
@@ -74,15 +94,10 @@ class _SearchPageState extends State<SearchPage> {
       while (cursor < targets.length && generation == _generation) {
         final (config, site) = targets[cursor++];
         try {
-          final result = await c.search(
-            _keyword,
-            site: site,
-            config: config,
-            page: requestedPage,
-          );
+          final result = await c
+              .search(_keyword, site: site, config: config, page: 1)
+              .timeout(SearchConcurrency.sourceTimeout);
           if (!mounted || generation != _generation) return;
-          _page = requestedPage;
-          _pageCount = result.pageCount;
           _items.addAll(
             result.items.map((vod) => _SearchResult(vod, config, site)),
           );
@@ -95,9 +110,12 @@ class _SearchPageState extends State<SearchPage> {
       }
     }
 
-    // 三个并发在保证来源可追溯的前提下，限制网络与插件压力。
+    // 异步 I/O 并发，不创建 Dart 线程；本次任务使用启动时的并发上限。
     await Future.wait(
-      List.generate(targets.length.clamp(0, 3), (_) => worker()),
+      List.generate(
+        targets.length.clamp(0, SearchConcurrency.defaultLimit),
+        (_) => worker(),
+      ),
     );
     if (mounted && generation == _generation) setState(() => _busy = false);
   }
@@ -121,6 +139,7 @@ class _SearchPageState extends State<SearchPage> {
   void dispose() {
     _generation++;
     if (_busy) widget.controller.cancelSearch();
+    _historySession.removeListener(_historyChanged);
     _input.dispose();
     super.dispose();
   }
@@ -165,33 +184,57 @@ class _SearchPageState extends State<SearchPage> {
       body: Column(
         children: [
           if (_busy) const LinearProgressIndicator(minHeight: 2),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
-            child: Row(
-              children: [
-                Text(
-                  _searched ? '搜索($_done/$_total)' : '选择搜索范围',
+          if (_history.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Text('搜索历史'),
+                      const Spacer(),
+                      TextButton(
+                        onPressed: () => _saveHistory(_historySession.clear()),
+                        child: const Text('清空历史'),
+                      ),
+                    ],
+                  ),
+                  SizedBox(
+                    height: 42,
+                    child: ListView.separated(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: _history.length,
+                      separatorBuilder: (_, _) => const SizedBox(width: 8),
+                      itemBuilder: (context, index) {
+                        final keyword = _history[index];
+                        return InputChip(
+                          label: Text(keyword),
+                          onPressed: () {
+                            _input.text = keyword;
+                            _search();
+                          },
+                          deleteButtonTooltipMessage: '删除 $keyword',
+                          onDeleted: () =>
+                              _saveHistory(_historySession.remove(keyword)),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          if (_searched)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  '搜索($_done/$_total)',
                   style: Theme.of(context).textTheme.titleSmall,
                 ),
-                const Spacer(),
-                Flexible(
-                  child: SegmentedButton<bool>(
-                    style: const ButtonStyle(
-                      visualDensity: VisualDensity.compact,
-                    ),
-                    segments: const [
-                      ButtonSegment(value: false, label: Text('当前源')),
-                      ButtonSegment(value: true, label: Text('全部')),
-                    ],
-                    selected: {_all},
-                    onSelectionChanged: _busy
-                        ? null
-                        : (value) => setState(() => _all = value.first),
-                  ),
-                ),
-              ],
+              ),
             ),
-          ),
           if (_errors.isNotEmpty)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -218,7 +261,7 @@ class _SearchPageState extends State<SearchPage> {
                 ? const Center(
                     child: EmptyState(
                       title: '寻找下一段好时光',
-                      message: '输入关键词，搜索当前内容源或聚合所有已启用站点。',
+                      message: '输入关键词，搜索所有已启用的可搜索站点。',
                       icon: Icons.search,
                     ),
                   )
@@ -242,20 +285,10 @@ class _SearchPageState extends State<SearchPage> {
                       Expanded(
                         child: ListView.separated(
                           padding: const EdgeInsets.fromLTRB(12, 8, 16, 20),
-                          itemCount:
-                              visible.length + (_showMore ? 1 : 0),
+                          itemCount: visible.length,
                           separatorBuilder: (_, _) =>
                               const SizedBox(height: 10),
                           itemBuilder: (context, index) {
-                            if (index >= visible.length) {
-                              return Padding(
-                                padding: const EdgeInsets.all(12),
-                                child: OutlinedButton(
-                                  onPressed: () => _search(more: true),
-                                  child: const Text('加载更多'),
-                                ),
-                              );
-                            }
                             final result = visible[index];
                             return _ResultCard(
                               result: result,
@@ -277,9 +310,6 @@ class _SearchPageState extends State<SearchPage> {
       ),
     );
   }
-
-  bool get _showMore =>
-      !_all && !_busy && _items.isNotEmpty && _page < _pageCount;
 }
 
 /// 左侧来源栏：与截图一致的窄列，每项显示来源名与命中数量。
@@ -342,9 +372,8 @@ class _RailItem extends StatelessWidget {
     child: Material(
       color: active
           ? color
-          : Theme.of(context).colorScheme.surfaceContainerHighest.withValues(
-              alpha: .55,
-            ),
+          : Theme.of(context).colorScheme.surfaceContainerHighest
+                .withValues(alpha: .55),
       borderRadius: BorderRadius.circular(10),
       child: InkWell(
         borderRadius: BorderRadius.circular(10),
@@ -374,9 +403,8 @@ class _RailItem extends StatelessWidget {
                   style: TextStyle(
                     fontSize: 10,
                     color: active
-                        ? Theme.of(
-                            context,
-                          ).colorScheme.onPrimary.withValues(alpha: .8)
+                        ? Theme.of(context).colorScheme.onPrimary
+                              .withValues(alpha: .8)
                         : Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
                 ),
@@ -436,9 +464,10 @@ class _ResultCard extends StatelessWidget {
                       Text(
                         vod.remarks.isNotEmpty
                             ? vod.remarks
-                            : [vod.year, vod.area]
-                                  .where((e) => e.isNotEmpty)
-                                  .join(' · '),
+                            : [
+                                vod.year,
+                                vod.area,
+                              ].where((e) => e.isNotEmpty).join(' · '),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
