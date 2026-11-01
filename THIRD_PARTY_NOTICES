@@ -1,0 +1,92 @@
+TVBox native source-engine third-party notices
+
+This combined application includes GPLv3 code. LICENSE contains GNU GPL version 3.
+Distribution must include the corresponding source, build scripts, notices and all
+applicable license obligations. This tree contains application and adapted host
+source; remaining native provenance limitations are documented below and in
+ docs/DEPENDENCIES.md. GitHub Actions artifacts are development builds, not
+production releases or verified all-source playback results.
+
+FongMi/TV
+  https://github.com/FongMi/TV
+  Fixed reference: 5e191aaced194e5cac5668cc91908ecb65336222 (fongmi branch).
+  License: GPL-3.0, repository LICENSE.md; full text bundled in
+  android/source_engine/src/main/assets/licenses/FongMi-GPL-3.0.txt.
+  Imported/adapted: catvod net Net/NetOptions/NetRequest/NetStore/NetTrace/
+  NetSocket/NetExchange/NetMap/NetCache/CacheOptions/Download; utils Json/Task/
+  Crypto/Dialog/CallTimeout/Local/Path/Asset/UriUtil; crawler SpiderDebug.
+  Host EngineSession, LocalProxy and PlayerResolver are new implementations using
+  the upstream JarLoader/BaseLoader/Spider parser/proxy ABI. Spider combines
+  traditional ABI (4d7e16fa237dbea5f5f066429d31b94a5b037301) and current fields.
+  Changes: application-context integration, app-private dynamic code, verified MD5,
+  non-extension DEX detection, read-only publication, per-session initialization,
+  explicit cancellation, loopback-only routes, system TLS trust, streaming proxy.
+  OkHttp policy intentionally does NOT copy any invalid-TLS bypass configuration.
+  FongMi/CatVodSpider unlicensed example repositories were NOT copied.
+  TVBoxOS/AGPL source was NOT copied.
+
+Matched QuickJS runtime
+  Java wrapper and runtime-release.aar are BOTH from FongMi/TV fixed 5e191aa above.
+  Native libraries extracted unchanged from that AAR, ARM64/ARMv7 only.
+  wrapper SHA256 fde3c352bd4285682da071c998b65dd08a04901b072c390bf4f3b53e2db33ea2
+  ARM64 SO SHA256 6c66fb84471c8b3e6ad3501e7457c6209fbfeef75d966bd3ec2bd2940a1ad516
+  ARMv7 SO SHA256 a474c8b38d8bd0a9a886b49f270172cabb655fbf712536fa8566f4fb1563d154
+  Source project: https://github.com/FongMi/QuickJS
+  License: MIT (QuickJS and quickjs-ng); text in assets/licenses/QuickJS-MIT.txt.
+  Wrapper embeds additional Chicory Apache-2.0 and web-platform notices preserved
+  in its META-INF/licenses entries. Upstream artifact links are in docs/DEPENDENCIES.md;
+  local download caches are not part of the public repository.
+  This TV commit does not record the QuickJS source revision used to produce its
+  binary pair. Exact native corresponding source/build reproducibility remains
+  unverified; artifact matching is by the TV commit and hashes, not an invented
+  QuickJS revision. QuickJS repository license was retrieved at
+  c9e232b4020fa68b6da6fdfc6a536b844f0d6165; that is NOT a build provenance claim.
+  No x86/x86_64 JS support is claimed.
+
+Traditional drpy
+  https://github.com/hjdhnx/dr_py
+  Fixed source: ca23ffdbf5e429c5893ac60158668fc5af7af192.
+  Imported: libs/drpy2.js, libs/jsencrypt.js, libs/gbk.js, libs/cheerio.min.js,
+  libs/crypto-js.js, js/模板.js. Stored under Android assets/drpy and assets/js/lib.
+  Repository license: LGPL-3.0; full text assets/licenses/drpy-LGPL-3.0.txt.
+  Engine source version string: drpy2 3.9.49beta40 202400426.
+  Host adapters req/local/pdfh/pdfa/pd/joinUrl/crypto are in assets/engine/host.js
+  and JsHost.kt. Raw rules and standard default/__jsEvalReturn modules supported;
+  source JS only. Precompiled bytecode is runtime-specific and not accepted.
+  Vendor code retains upstream copyright notices: CryptoJS (MIT), Cheerio (MIT),
+  JSEncrypt (MIT), GBK implementation and drpy template distributed with source.
+
+Maven dependencies (licenses supplied with their artifacts/source projects)
+  OkHttp Android 5.4.0 / Okio: Apache-2.0; https://github.com/square/okhttp
+  Android variant explicitly selected for Android platform TLS/ALPN adapters.
+  5.4.0 supports compileSdk 36 and the host's WebSocket close timeout API;
+  the unsuitable 5.5.0 JVM-only artifact is not used.
+  Jsoup 1.18.3: MIT; https://jsoup.org/license
+  Gson 2.11.0: Apache-2.0; https://github.com/google/gson
+  NanoHTTPD 2.3.1: BSD-3-Clause; https://github.com/NanoHttpd/nanohttpd
+  Guava 33.4.0-android: Apache-2.0; https://github.com/google/guava
+  Logger 2.2.0: Apache-2.0; https://github.com/orhanobut/logger
+  AndroidX core/annotation/test: Apache-2.0; https://source.android.com
+  desugar_jdk_libs 2.1.5: GPLv2 with Classpath Exception and additional notices.
+  JUnit 4.13.2 (tests only): EPL-1.0.
+  Flutter engine compile-only dependency is provided by the app toolchain, not
+  repackaged by source_engine; Flutter notices remain managed by Flutter.
+
+Runtime trust boundary and verification status
+  JARs and JS execute code with application permissions, not in a sandbox. They
+  load only when the application opens a trusted plugin session. This development
+  work did NOT download or execute subscription-provided JARs. The controlled
+  fixture source in android/tools/fixture-src is authored for this application.
+  Legacy 9978/9997/5266 listeners bind only 127.0.0.1 when explicitly requested
+  by an active session. Ordinary plugin initialization uses the dynamic proxy.
+  Required-port conflicts fail with a specific port; optional failures are reported
+  independently. Only /proxy, /?do=... and named /file routes exist. Unsupported
+  /iptv is an error, not an empty success.
+  /file/name maps in-memory _privateCredentials only; no arbitrary file reads.
+  Cross-origin Origin requests are rejected. Legacy name-only access remains
+  accessible to trusted local processes/plugins and is NOT UID security isolation.
+  Different values for one name are rejected unless an explicit session is given.
+  Closing a session revokes its credentials. No credential value is in this file.
+  All Android device, native JNI, dynamic ART, WebView, parser and playback runtime
+  tests remain NOT RUN until a device is supplied. Compilation is not playback
+  verification and no claim that every external JAR works is made.

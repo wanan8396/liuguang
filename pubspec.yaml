@@ -1,0 +1,48 @@
+name: tvbox
+description: 流光 · Flutter 多仓视频播放器
+publish_to: none
+version: 0.1.0+1
+
+environment:
+  sdk: '>=3.10.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  flutter_riverpod: ^3.0.0
+  dio: ^5.9.0
+  hive_ce: ^2.15.1
+  hive_ce_flutter: ^2.3.1
+  path_provider: ^2.1.5
+  path: ^1.9.1
+  crypto: ^3.0.6
+  pointycastle: ^4.0.0
+  archive: ^4.0.7
+  json5: ^0.8.2
+  xml: ^6.6.1
+  html: ^0.15.6
+  media_kit: ^1.2.6
+  media_kit_video: ^2.0.1
+  media_kit_libs_video: ^1.0.7
+  flutter_secure_storage: ^9.2.4
+  cached_network_image: ^3.4.1
+  mobile_scanner: ^7.1.4
+  file_selector: ^1.0.3
+  share_plus: ^12.0.0
+  package_info_plus: ^9.0.0
+  screen_brightness: ^2.1.7
+  volume_controller: ^3.4.0
+  wakelock_plus: ^1.4.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  pigeon: ^26.1.0
+
+flutter:
+  uses-material-design: true

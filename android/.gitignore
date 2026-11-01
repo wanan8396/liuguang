@@ -1,0 +1,12 @@
+/.gradle/
+/.kotlin/
+/.upstream/
+/.baseline/
+/captures/
+/local.properties
+GeneratedPluginRegistrant.java
+.cxx/
+key.properties
+**/*.keystore
+**/*.jks
+# Gradle wrapper scripts and gradle/wrapper/gradle-wrapper.jar are intentionally tracked.

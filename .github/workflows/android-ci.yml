@@ -1,0 +1,169 @@
+name: Android CI
+
+on:
+  push:
+    branches: [main, 'fix/**', 'ci/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: '3.47.8'
+  JAVA_VERSION: '21'
+  GRADLE_OPTS: '-Dorg.gradle.daemon=false -Dorg.gradle.workers.max=2 -Dorg.gradle.jvmargs=-Xmx3072m'
+
+jobs:
+  flutter-tests:
+    name: Flutter analysis and offline tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - name: Install locked dependencies
+        run: flutter pub get --enforce-lockfile
+      - name: Analyze
+        run: flutter analyze --no-pub
+      - name: Test without remote subscriptions
+        env:
+          UI_ARTIFACT_DIR: artifacts/ui
+        run: |
+          mkdir -p artifacts
+          set -o pipefail
+          flutter test --no-pub --reporter expanded --timeout 90s 2>&1 | tee artifacts/flutter-tests.log
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: flutter-tests-${{ github.sha }}
+          path: artifacts/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  android-build:
+    name: Android native tests and ARM64 APK
+    runs-on: ubuntu-24.04
+    needs: flutter-tests
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - name: Prepare pinned Android tools and Flutter embedding
+        run: |
+          sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358'
+          flutter precache --android
+          flutter pub get --enforce-lockfile
+          printf 'sdk.dir=%s\nflutter.sdk=%s\n' "${ANDROID_SDK_ROOT:-$ANDROID_HOME}" "$FLUTTER_ROOT" > android/local.properties
+          test -f "$FLUTTER_ROOT/bin/cache/artifacts/engine/android-x64/flutter.jar"
+      - name: Native JVM regression tests
+        working-directory: android
+        run: ./gradlew :source_engine:testDebugUnitTest --no-daemon --max-workers=2 --console=plain
+      - name: Build development-signed ARM64 APK
+        run: flutter build apk --release --split-per-abi --target-platform android-arm64
+      - name: Verify APK and record digest
+        run: |
+          mkdir -p artifacts/apk
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk artifacts/apk/liuguang-arm64.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs artifacts/apk/liuguang-arm64.apk > artifacts/apk/signature.txt
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging artifacts/apk/liuguang-arm64.apk > artifacts/apk/package.txt
+          (cd artifacts/apk && sha256sum liuguang-arm64.apk > SHA256SUMS.txt)
+          printf 'commit=%s\nsigning=development-only\nreal-source-playback=not-tested\n' "$GITHUB_SHA" > artifacts/apk/BUILD.txt
+      - name: Upload ARM64 APK
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: liuguang-arm64-${{ github.sha }}
+          path: artifacts/apk/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload native reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-unit-tests-${{ github.sha }}
+          path: |
+            build/source_engine/reports/tests/
+            build/source_engine/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  emulator-regression:
+    name: Emulator DEX and occupied-port regression
+    runs-on: ubuntu-24.04
+    needs: flutter-tests
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - name: Prepare test toolchain
+        run: |
+          sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358'
+          flutter precache --android
+          flutter pub get --enforce-lockfile
+          printf 'sdk.dir=%s\nflutter.sdk=%s\n' "${ANDROID_SDK_ROOT:-$ANDROID_HOME}" "$FLUTTER_ROOT" > android/local.properties
+      - name: Rebuild controlled DEX fixture from source
+        run: |
+          (cd android && ./gradlew :source_engine:compileDebugJavaWithJavac -PciEmulator=true --no-daemon --max-workers=2 -Pkotlin.compiler.execution.strategy=in-process --console=plain)
+          bash android/tools/build-fixture.sh
+      - name: Enable hosted-runner KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run controlled instrumentation on x86_64
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
+        with:
+          api-level: 35
+          target: default
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: cd android && ./gradlew :source_engine:connectedDebugAndroidTest -PciEmulator=true -Pandroid.testInstrumentationRunnerArguments.skipQuickJs=true -Pandroid.testInstrumentationRunnerArguments.class=cn.liuguang.engine.SourceEnginePluginPortTest,cn.liuguang.engine.NativeEngineTest --no-daemon --max-workers=2 -Pkotlin.compiler.execution.strategy=in-process --console=plain
+      - name: Explain runtime coverage
+        if: always()
+        run: |
+          printf '### Emulator coverage\n- Runs controlled DEX and actual plugin open/close port-conflict tests.\n- ARM-only QuickJS test is explicitly skipped on x86_64.\n- No real subscription plugins, account credentials, or media are fetched.\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload instrumentation reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: emulator-regression-${{ github.sha }}
+          path: |
+            build/source_engine/reports/androidTests/
+            build/source_engine/outputs/androidTest-results/
+          if-no-files-found: ignore
+          retention-days: 14
