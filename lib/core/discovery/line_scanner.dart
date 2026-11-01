@@ -300,7 +300,7 @@ class LineScanner {
       _queue.add(node);
     }
 
-    _report('验证线路', 0, _pending, '共 ${_pending} 条候选');
+    _report('验证线路', 0, _pending, '共 $_pending 条候选');
     _pump();
     await done.future;
     _running = false;
