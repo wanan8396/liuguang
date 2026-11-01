@@ -37,6 +37,31 @@ class NativeEngineTest {
         }
         file.delete()
     }
+    /**
+     * Downloaded plugins open /data/data/<pkg>/databases/tv with a hardcoded absolute path instead of
+     * Context.getDatabasePath(), so a missing databases directory makes every plugin cache bootstrap
+     * throw SQLiteCantOpenDatabaseException. Observed on a real device as repeated:
+     *   SQLiteCantOpenDatabaseException: '/data/user/0/cn.liuguang.tvbox/databases/tv' doesn't exist
+     *   at com.github.catvod.spider.InitOrigin.init / DexNative.getLoader
+     */
+    @Test fun pluginDatabaseDirectoryExistsBeforeInit() {
+        val instrumentation=InstrumentationRegistry.getInstrumentation()
+        val context=instrumentation.targetContext
+        com.github.catvod.Runtime.set(context)
+        val databases=File(context.applicationInfo.dataDir,"databases")
+        databases.deleteRecursively()
+        assertFalse("precondition: databases directory must be absent",databases.exists())
+        val file=File(context.filesDir,"controlled-fixture.png")
+        instrumentation.context.assets.open("controlled.png").use { input -> file.outputStream().use { input.copyTo(it) } }
+        val digest=EngineRules.digest(file.readBytes(),"MD5")
+        val config=JSONObject().put("url","https://fixture.invalid/config.json").put("raw",JSONObject().put("spider",file.toURI().toString()+";md5;"+digest))
+        val site=JSONObject().put("key","controlled").put("type",3).put("api","csp_Controlled").put("ext","verified")
+        EngineSession(context,config,site).use { s ->
+            s.initialize()
+            assertTrue("databases directory must exist before plugin Init.init runs",databases.isDirectory)
+        }
+        file.delete()
+    }
     @Test fun wrongMd5FailsBeforeDexLoad() {
         val instrumentation=InstrumentationRegistry.getInstrumentation()
         val context=instrumentation.targetContext

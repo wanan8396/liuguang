@@ -26,6 +26,7 @@ open class EngineSession(val context: Context, val config: JSONObject, val site:
     var js: JsHost? = null
     private val folder = File(context.codeCacheDir, "source_engine").apply { mkdirs() }
     fun initialize() {
+        preparePluginDirs()
         val api = site.optString("api")
         val type = site.optInt("type", 0)
         val jsApi = api.substringBefore('?').endsWith(".js", true) || site.optString("engine")=="js"
@@ -52,6 +53,18 @@ open class EngineSession(val context: Context, val config: JSONObject, val site:
         value.init(context.applicationContext, ext())
     }
     private fun ext(): String { val value = site.opt("ext"); return if(value==null || value==JSONObject.NULL) "" else value.toString() }
+
+    /**
+     * Downloaded DEX plugins own their persistence and open `/data/data/<pkg>/databases/tv` through
+     * android.database.sqlite rather than Context.getDatabasePath(), so the parent directory has to
+     * exist before Init.init runs or every plugin's cache bootstrap throws SQLiteCantOpenDatabaseException.
+     * Creating it is not destructive; existing databases and their WAL files stay untouched.
+     */
+    private fun preparePluginDirs() {
+        listOf("databases","files","cache","shared_prefs").forEach { name ->
+            runCatching { File(context.applicationInfo.dataDir, name).mkdirs() }
+        }
+    }
     private fun localFile(url: String): File {
         val file = File(java.net.URI(url)).canonicalFile
         val roots = listOf(context.filesDir,context.cacheDir,context.codeCacheDir).map { it.canonicalFile }
