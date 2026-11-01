@@ -73,8 +73,9 @@ class SearchHistorySession extends ChangeNotifier {
       final next = operation.apply(List<String>.of(_committed));
       try {
         final store = _store.target;
-        if (store == null)
+        if (store == null) {
           throw StateError('Search history store is unavailable');
+        }
         await store.setSetting(SearchHistory.settingKey, next);
         _committed = next;
         _operations.removeAt(0);

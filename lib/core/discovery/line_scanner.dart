@@ -432,11 +432,12 @@ class LineScanner {
         node.error = '$error';
       }
     } finally {
-      if (!_active(generation)) return;
-      _inFlight--;
-      _pending--;
-      _emit();
-      _pump(generation);
+      if (_active(generation)) {
+        _inFlight--;
+        _pending--;
+        _emit();
+        _pump(generation);
+      }
     }
   }
 
