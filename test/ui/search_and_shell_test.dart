@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tvbox/core/app_controller.dart';
 import 'package:tvbox/core/search/search_concurrency.dart';
+import 'package:tvbox/core/search/search_history.dart';
 import 'package:tvbox/core/storage/app_store.dart';
 import 'package:tvbox/features/profile/library_page.dart';
 import 'package:tvbox/features/detail/detail_page.dart';
@@ -21,6 +22,27 @@ class _MemorySettings extends AppStore {
   @override
   Future<void> setSetting(String key, Object? value) async {
     values[key] = value;
+  }
+}
+
+class _DelayedSettings extends _MemorySettings {
+  final writes = <(Object?, Completer<void>)>[];
+  @override
+  Future<void> setSetting(String key, Object? value) async {
+    final done = Completer<void>();
+    writes.add((value, done));
+    await done.future;
+    values[key] = value;
+  }
+}
+
+class _FailingSettings extends _MemorySettings {
+  final pending = <Completer<void>>[];
+  @override
+  Future<void> setSetting(String key, Object? value) {
+    final result = Completer<void>();
+    pending.add(result);
+    return result.future;
   }
 }
 
@@ -104,7 +126,6 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(home: SearchPage(controller: controller)),
     );
-    await tester.tap(find.text('全部'));
     await tester.enterText(find.byType(TextField), '影片');
     await tester.tap(find.byTooltip('搜索'));
     await tester.pumpAndSettle();
@@ -127,7 +148,6 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(home: SearchPage(controller: controller)),
       );
-      await tester.tap(find.text('全部'));
       await tester.enterText(find.byType(TextField), '旧搜索');
       await tester.tap(find.byTooltip('搜索'));
       await tester.pump();
@@ -175,7 +195,6 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(home: SearchPage(controller: controller)),
     );
-    await tester.tap(find.text('全部'));
     await tester.enterText(find.byType(TextField), '影片');
     await tester.tap(find.byTooltip('搜索'));
     await tester.pump();
@@ -209,36 +228,11 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     await controller.disposeAsync();
   });
-  testWidgets('concurrency selector saves and reloads 8 and 32', (
+  testWidgets('legacy limits are ignored and controls are hidden', (
     tester,
   ) async {
-    final store = _MemorySettings();
-    final controller = _FakeController(store: store);
-    for (final value in [8, 32]) {
-      await tester.pumpWidget(
-        MaterialApp(home: SearchPage(controller: controller)),
-      );
-      await tester.tap(find.byKey(const ValueKey('search-concurrency')));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('$value').last);
-      await tester.pumpAndSettle();
-      expect(store.setting(SearchConcurrency.settingKey), value);
-      await tester.pumpWidget(const SizedBox());
-      await tester.pumpWidget(
-        MaterialApp(home: SearchPage(controller: controller)),
-      );
-      final selector = tester.widget<DropdownButton<int>>(
-        find.byKey(const ValueKey('search-concurrency')),
-      );
-      expect(selector.value, value);
-    }
-    await tester.pumpWidget(const SizedBox());
-    await controller.disposeAsync();
-  });
-  testWidgets('saved limit controls queued source starts', (tester) async {
     for (final limit in [8, 32]) {
-      final store = _MemorySettings()
-        ..values[SearchConcurrency.settingKey] = limit;
+      final store = _MemorySettings()..values['searchConcurrency'] = limit;
       final controller = _FakeController(
         store: store,
         sources: true,
@@ -247,24 +241,165 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(home: SearchPage(controller: controller)),
       );
-      await tester.tap(find.text('全部'));
+      expect(find.byKey(const ValueKey('search-concurrency')), findsNothing);
+      expect(find.text('当前源'), findsNothing);
+      expect(find.text('全部'), findsNothing);
       await tester.enterText(find.byType(TextField), '影片');
       await tester.tap(find.byTooltip('搜索'));
       await tester.pump();
-      expect(controller.requests.length, limit);
-      expect(controller.maxActive, limit);
+      expect(controller.requests.length, 16);
       controller.pending.first.complete(VodPage(items: []));
       await tester.pump();
-      expect(controller.requests.length, limit + 1);
+      expect(controller.requests.length, 17);
       await tester.tap(find.byTooltip('取消搜索'));
       for (final request in controller.pending.skip(1)) {
         request.complete(VodPage(items: []));
       }
       await tester.pumpAndSettle();
-      expect(controller.requests.length, limit + 1);
       await tester.pumpWidget(const SizedBox());
       await controller.disposeAsync();
     }
+  });
+
+  testWidgets('history is persisted, searchable, removable and clearable', (
+    tester,
+  ) async {
+    final store = _MemorySettings();
+    final controller = _FakeController(store: store, sources: true);
+    await tester.pumpWidget(
+      MaterialApp(home: SearchPage(controller: controller)),
+    );
+    for (final term in ['甲', '乙', '甲']) {
+      await tester.enterText(find.byType(TextField), term);
+      await tester.tap(find.byTooltip('搜索'));
+      await tester.pumpAndSettle();
+    }
+    expect(store.setting(SearchHistory.settingKey), ['甲', '乙']);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pumpWidget(
+      MaterialApp(home: SearchPage(controller: controller)),
+    );
+    expect(find.text('搜索历史'), findsOneWidget);
+    final before = controller.requests.length;
+    await tester.tap(find.text('乙'));
+    await tester.pumpAndSettle();
+    expect(controller.requests.length, before + 5);
+    expect(store.setting(SearchHistory.settingKey), ['乙', '甲']);
+    await tester.tap(find.byTooltip('删除 甲'));
+    await tester.pumpAndSettle();
+    expect(store.setting(SearchHistory.settingKey), ['乙']);
+    await tester.tap(find.text('清空历史'));
+    await tester.pumpAndSettle();
+    expect(store.setting(SearchHistory.settingKey), isEmpty);
+    await tester.pumpWidget(const SizedBox());
+    await controller.disposeAsync();
+  });
+
+  testWidgets(
+    'reopened pages share pending writes and preserve operation order',
+    (tester) async {
+      final store = _DelayedSettings();
+      final controller = _FakeController(store: store);
+      Future<void> open() => tester.pumpWidget(
+        MaterialApp(home: SearchPage(controller: controller)),
+      );
+      await open();
+      await tester.enterText(find.byType(TextField), '甲');
+      await tester.tap(find.byTooltip('搜索'));
+      await tester.pump();
+      expect(store.writes.length, 1);
+      await tester.pumpWidget(const SizedBox());
+      await open();
+      expect(find.text('甲'), findsOneWidget);
+      await tester.enterText(find.byType(TextField), '乙');
+      await tester.tap(find.byTooltip('搜索'));
+      await tester.pump();
+      expect(store.writes.length, 1);
+      store.writes[0].$2.complete();
+      await tester.pump();
+      expect(store.writes.length, 2);
+      expect(store.writes[1].$1, ['乙', '甲']);
+      store.writes[1].$2.complete();
+      await tester.pump();
+      expect(store.setting(SearchHistory.settingKey), ['乙', '甲']);
+      await tester.pumpWidget(const SizedBox());
+      await controller.disposeAsync();
+    },
+  );
+
+  testWidgets('history sessions do not cross stores', (tester) async {
+    final first = _DelayedSettings();
+    final second = _DelayedSettings();
+    final a = SearchHistorySession.forStore(first);
+    final b = SearchHistorySession.forStore(second);
+    final pendingA = a.add('甲');
+    final pendingB = b.add('乙');
+    expect(a.history, ['甲']);
+    expect(b.history, ['乙']);
+    second.writes.single.$2.complete();
+    await tester.pump();
+    expect(second.setting(SearchHistory.settingKey), ['乙']);
+    expect(first.setting(SearchHistory.settingKey), isNull);
+    first.writes.single.$2.complete();
+    await tester.pump();
+    await pendingA;
+    await pendingB;
+    expect(first.setting(SearchHistory.settingKey), ['甲']);
+  });
+
+  testWidgets(
+    'failed pending write is rebased without contaminating later history',
+    (tester) async {
+      final store = _DelayedSettings();
+      final controller = _FakeController(store: store);
+      await tester.pumpWidget(
+        MaterialApp(home: SearchPage(controller: controller)),
+      );
+      await tester.enterText(find.byType(TextField), '甲');
+      await tester.tap(find.byTooltip('搜索'));
+      await tester.pump();
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpWidget(
+        MaterialApp(home: SearchPage(controller: controller)),
+      );
+      await tester.enterText(find.byType(TextField), '乙');
+      await tester.tap(find.byTooltip('搜索'));
+      await tester.pump();
+      store.writes[0].$2.completeError(StateError('failed'));
+      await tester.pump();
+      expect(store.writes[1].$1, ['乙']);
+      expect(find.text('甲'), findsNothing);
+      store.writes[1].$2.complete();
+      await tester.pump();
+      expect(store.setting(SearchHistory.settingKey), ['乙']);
+      await tester.pumpWidget(const SizedBox());
+      await controller.disposeAsync();
+    },
+  );
+
+  testWidgets('history write failures do not crash search or disposed page', (
+    tester,
+  ) async {
+    final store = _FailingSettings();
+    final controller = _FakeController(store: store, sources: true);
+    await tester.pumpWidget(
+      MaterialApp(home: SearchPage(controller: controller)),
+    );
+    await tester.enterText(find.byType(TextField), '影片');
+    await tester.tap(find.byTooltip('搜索'));
+    await tester.pump();
+    store.pending.first.completeError(StateError('write failed'));
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    expect(controller.requests.length, 5);
+    await tester.enterText(find.byType(TextField), '另一个');
+    await tester.tap(find.byTooltip('搜索'));
+    await tester.pump();
+    await tester.pumpWidget(const SizedBox());
+    store.pending.last.completeError(StateError('disposed'));
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    await controller.disposeAsync();
   });
   testWidgets(
     'shell renders honest empty state, profile navigation, and screenshot artifacts',

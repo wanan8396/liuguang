@@ -36,7 +36,11 @@ class SourceEnginePlugin private constructor(private val activity: Activity,priv
             try {
                 com.github.catvod.Runtime.set(activity.applicationContext)
                 com.github.catvod.Runtime.bindActivity(activity)
-                com.github.catvod.Runtime.setDialog { options,action -> plugin.dialogs.show(options,action) }
+                com.github.catvod.Runtime.setDialog { options,action ->
+                    // Capture on the plugin calling thread, before posting anything to main.
+                    if(DialogInteractionPolicy.isAllowed()) plugin.dialogs.show(options,action)
+                    else CompletableFuture.completedFuture(PluginDialogHost.CANCEL_JSON)
+                }
                 install(plugin)
                 plugin
             } catch (error: Throwable) {
@@ -61,7 +65,7 @@ class SourceEnginePlugin private constructor(private val activity: Activity,priv
         val completed=AtomicBoolean()
         fun deliver(result: Result<T>) { if(completed.compareAndSet(false,true)) main.post { callback(result) } }
         val task=object: FutureTask<Unit>(Callable {
-            try { check(!closed.get()) { "Engine detached" }; deliver(Result.success(action())) } catch(e: Throwable) { deliver(Result.failure(error(e))) }; Unit
+            try { check(!closed.get()) { "Engine detached" }; deliver(Result.success(DialogInteractionPolicy.withPermission(false,action))) } catch(e: Throwable) { deliver(Result.failure(error(e))) }; Unit
         }) {
             override fun done() { if(isCancelled) deliver(Result.failure(FlutterError("CANCELLED","Operation cancelled"))); if(id!=null) jobs[id]?.remove(this) }
         }
@@ -69,10 +73,10 @@ class SourceEnginePlugin private constructor(private val activity: Activity,priv
         try { executor.execute(task) } catch(e: RejectedExecutionException) { if(id!=null) jobs[id]?.remove(task); deliver(Result.failure(error(e))) }
     }
     private fun session(id: String) = sessions[id] ?: throw FlutterError("SESSION_CLOSED","Source session does not exist")
-    private fun source(id: String,callback: (Result<String>)->Unit,action: (EngineSession)->String) {
+    private fun source(id: String,callback: (Result<String>)->Unit,interactive: Boolean=false,action: (EngineSession)->String) {
         val s=try { session(id) } catch(e: Throwable) { callback(Result.failure(e)); return }
         val generation=s.generation.get()
-        submit(id,callback) { synchronized(s.lock) { if(generation!=s.generation.get()) throw CancellationException(); val value=action(s); if(generation!=s.generation.get()) throw CancellationException(); value } }
+        submit(id,callback) { synchronized(s.lock) { if(generation!=s.generation.get()) throw CancellationException(); val value=DialogInteractionPolicy.withPermission(interactive) { action(s) }; if(generation!=s.generation.get()) throw CancellationException(); value } }
     }
     override fun openSession(configJson: String,siteJson: String,callback: (Result<String>)->Unit) = submit(callback=callback) {
         val s=EngineSession(activity.applicationContext,JSONObject(configJson),JSONObject(siteJson))
@@ -102,9 +106,9 @@ class SourceEnginePlugin private constructor(private val activity: Activity,priv
     override fun home(sessionId: String,filter: Boolean,callback: (Result<String>)->Unit) = source(sessionId,callback) { it.call("home",filter) }
     override fun category(sessionId: String,tid: String,page: Long,filtersJson: String,callback: (Result<String>)->Unit) = source(sessionId,callback) { s -> val json=JSONObject(filtersJson); val filters=HashMap<String,String>(); json.keys().forEach { filters[it]=json.opt(it).toString() }; s.call("category",tid,page.toString(),filters) }
     override fun search(sessionId: String,keyword: String,page: Long,callback: (Result<String>)->Unit) = source(sessionId,callback) { it.call("search",keyword,page.toString()) }
-    override fun detail(sessionId: String,id: String,callback: (Result<String>)->Unit) = source(sessionId,callback) { it.call("detail",id) }
-    override fun play(sessionId: String,flag: String,id: String,callback: (Result<String>)->Unit) = source(sessionId,callback) { it.call("play",flag,id) }
-    override fun resolve(sessionId: String,resultJson: String,parserJson: String,callback: (Result<String>)->Unit) = source(sessionId,callback) { resolver.resolve(it,JSONObject(resultJson),PlayerResolver.parserFromJson(parserJson)) }
+    override fun detail(sessionId: String,id: String,callback: (Result<String>)->Unit) = source(sessionId,callback,true) { it.call("detail",id) }
+    override fun play(sessionId: String,flag: String,id: String,callback: (Result<String>)->Unit) = source(sessionId,callback,true) { it.call("play",flag,id) }
+    override fun resolve(sessionId: String,resultJson: String,parserJson: String,callback: (Result<String>)->Unit) = source(sessionId,callback,true) { resolver.resolve(it,JSONObject(resultJson),PlayerResolver.parserFromJson(parserJson)) }
     override fun fetchLocal(sessionId: String,url: String,callback: (Result<String>)->Unit) = source(sessionId,callback) { proxy.localText(it,url) }
     override fun cancel(sessionId: String,callback: (Result<Unit>)->Unit) {
         sessions[sessionId]?.cancel(); sniffer.cancel(sessionId); jobs[sessionId]?.toList()?.forEach { it.cancel(true) }; callback(Result.success(Unit))

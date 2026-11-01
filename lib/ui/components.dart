@@ -12,16 +12,23 @@ String timeLabel(Duration value) {
   return '${minutes ~/ 60 > 0 ? '${minutes ~/ 60}:' : ''}${(minutes % 60).toString().padLeft(2, '0')}:${(seconds % 60).toString().padLeft(2, '0')}';
 }
 
-/// Only explicit image headers are inherited. Playback cookies/tokens must not
-/// accidentally be sent to an unrelated poster host.
+/// Generic headers contribute only safe fields; explicit image headers override
+/// them. Playback cookies/tokens must not leak to an unrelated poster host.
 Map<String, String> imageHeaders(TvConfig? config, Site? site, [Vod? vod]) {
   final result = <String, String>{'User-Agent': 'okhttp/4.9.1'};
+  void put(String key, String value) {
+    result.removeWhere(
+      (existing, _) => existing.toLowerCase() == key.toLowerCase(),
+    );
+    result[key] = value;
+  }
+
   void merge(dynamic value) {
     try {
       if (value is String) value = jsonDecode(value);
       if (value is Map) {
         for (final entry in value.entries) {
-          if (entry.value is String) result[entry.key.toString()] = entry.value;
+          if (entry.value is String) put(entry.key.toString(), entry.value);
         }
       }
     } catch (_) {
@@ -29,7 +36,7 @@ Map<String, String> imageHeaders(TvConfig? config, Site? site, [Vod? vod]) {
     }
   }
 
-  // Generic request metadata may safely contribute UA and referrer only.
+  // Generic request metadata may safely contribute UA, referer and origin only.
   // Never forward its cookies/authorization to third-party image hosts.
   void mergeSafe(dynamic value) {
     try {
@@ -42,7 +49,7 @@ Map<String, String> imageHeaders(TvConfig? config, Site? site, [Vod? vod]) {
                 'origin',
               ].contains(entry.key.toString().toLowerCase()) &&
               entry.value is String) {
-            result[entry.key.toString()] = entry.value;
+            put(entry.key.toString(), entry.value);
           }
         }
       }
@@ -51,12 +58,21 @@ Map<String, String> imageHeaders(TvConfig? config, Site? site, [Vod? vod]) {
     }
   }
 
+  mergeSafe(config?.raw['httpHeaders']);
   mergeSafe(config?.raw['headers'] ?? config?.raw['header']);
+  mergeSafe(site?.raw['httpHeaders']);
   mergeSafe(site?.raw['headers'] ?? site?.raw['header']);
   final ua = site?.raw['ua'] ?? config?.raw['ua'];
-  if (ua is String && ua.isNotEmpty) result['User-Agent'] = ua;
+  if (ua is String && ua.isNotEmpty) put('User-Agent', ua);
   final referer = site?.raw['referer'] ?? config?.raw['referer'];
-  if (referer is String && referer.isNotEmpty) result['Referer'] = referer;
+  if (referer is String && referer.isNotEmpty) put('Referer', referer);
+  final base = Uri.tryParse(site?.api ?? '');
+  if (!result.keys.any((key) => key.toLowerCase() == 'referer') &&
+      base != null &&
+      (base.scheme == 'http' || base.scheme == 'https') &&
+      base.host.isNotEmpty) {
+    put('Referer', base.toString());
+  }
   merge(config?.raw['imageHeaders'] ?? config?.raw['picHeader']);
   merge(site?.raw['imageHeaders'] ?? site?.raw['picHeader']);
   merge(vod?.raw['picHeader'] ?? vod?.raw['vod_pic_header']);
@@ -121,9 +137,8 @@ class EmptyState extends StatelessWidget {
         Container(
           padding: const EdgeInsets.all(22),
           decoration: BoxDecoration(
-            color: Theme.of(
-              context,
-            ).colorScheme.primaryContainer.withValues(alpha: .4),
+            color: Theme.of(context).colorScheme.primaryContainer
+                .withValues(alpha: .4),
             borderRadius: BorderRadius.circular(28),
           ),
           child: Icon(
@@ -141,9 +156,8 @@ class EmptyState extends StatelessWidget {
         const SizedBox(height: 8),
         Text(
           message,
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-            color: Theme.of(context).colorScheme.onSurfaceVariant,
-          ),
+          style: Theme.of(context).textTheme.bodyMedium
+              ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
           textAlign: TextAlign.center,
         ),
         if (action != null) ...[
@@ -184,29 +198,75 @@ class ErrorNotice extends StatelessWidget {
   );
 }
 
+/// 仅识别图片地址附带的 UA/Referer，避免把令牌发往图片服务器。
+({String url, Map<String, String> headers}) posterRequest(
+  String input,
+  Map<String, String> headers,
+) {
+  final parts = input.trim().split(
+    RegExp(r'@(?=(?:Referer|User-Agent)=)', caseSensitive: false),
+  );
+  var address = parts.first.trim();
+  final merged = Map<String, String>.of(headers);
+  for (final part in parts.skip(1)) {
+    final equal = part.indexOf('=');
+    if (equal <= 0) continue;
+    final key = part.substring(0, equal).trim().toLowerCase();
+    if (key != 'referer' && key != 'user-agent') continue;
+    final value = part.substring(equal + 1).trim();
+    if (value.isEmpty || value.contains('\n') || value.contains('\r')) continue;
+    merged.removeWhere((k, _) => k.toLowerCase() == key);
+    merged[key == 'referer' ? 'Referer' : 'User-Agent'] = value;
+  }
+  final uri = Uri.tryParse(address);
+  String? referer;
+  for (final entry in merged.entries) {
+    if (entry.key.toLowerCase() == 'referer') referer = entry.value;
+  }
+  final base = Uri.tryParse(referer ?? '');
+  if (uri != null &&
+      !uri.hasScheme &&
+      base != null &&
+      (base.scheme == 'http' || base.scheme == 'https') &&
+      base.host.isNotEmpty) {
+    address = base.resolveUri(uri).toString();
+  }
+  final resolved = Uri.tryParse(address);
+  if (resolved == null ||
+      !['http', 'https'].contains(resolved.scheme.toLowerCase()) ||
+      resolved.host.isEmpty) {
+    address = '';
+  }
+  return (url: address, headers: merged);
+}
+
 class Poster extends StatelessWidget {
   const Poster({super.key, required this.url, this.headers = const {}});
   final String url;
   final Map<String, String> headers;
   @override
   Widget build(BuildContext context) {
-    final placeholder = ColoredBox(
-      color: Theme.of(context).colorScheme.surfaceContainerHighest,
-      child: Center(
-        child: Icon(
-          Icons.image_not_supported_outlined,
-          size: 30,
-          color: Theme.of(context).colorScheme.onSurfaceVariant,
+    final request = posterRequest(url, headers);
+    final placeholder = Semantics(
+      label: '封面不可用',
+      child: ColoredBox(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        child: Center(
+          child: Icon(
+            Icons.image_not_supported_outlined,
+            size: 30,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
         ),
       ),
     );
     return ClipRRect(
       borderRadius: BorderRadius.circular(12),
-      child: url.trim().isEmpty
+      child: request.url.isEmpty
           ? placeholder
           : Image.network(
-              url,
-              headers: headers,
+              request.url,
+              headers: request.headers,
               fit: BoxFit.cover,
               errorBuilder: (_, _, _) => placeholder,
               loadingBuilder: (_, child, progress) =>

@@ -34,30 +34,15 @@ class _LineDiscoveryPageState extends State<LineDiscoveryPage> {
     super.dispose();
   }
 
-  /// 把多仓节点展开成可独立选择的叶子线路。
-  List<ScanNode> get _leaves {
-    final out = <ScanNode>[];
-    void walk(ScanNode node) {
-      final expanded = node.multi && node.children.isNotEmpty;
-      if (expanded) {
-        for (final child in node.children) {
-          walk(child);
-        }
-      } else if (node.available) {
-        out.add(node);
-      }
-    }
-
-    for (final root in _scanner.roots) {
-      walk(root);
-    }
-    out.sort((a, b) => a.totalMs.compareTo(b.totalMs));
-    return out;
-  }
-
+  List<ScanNode> get _results => discoveryResults(_scanner.roots);
+  List<ScanNode> get _leaves =>
+      _results
+          .where((n) => n.available && !(n.multi && n.children.isNotEmpty))
+          .toList()
+        ..sort((a, b) => a.totalMs.compareTo(b.totalMs));
   List<ScanNode> get _visible {
-    final leaves = _leaves;
-    return leaves.where((node) {
+    final results = _results;
+    return results.where((node) {
       if (_query.isNotEmpty) {
         final text = '${node.name} ${node.url}'.toLowerCase();
         if (!text.contains(_query.toLowerCase())) return false;
@@ -70,7 +55,9 @@ class _LineDiscoveryPageState extends State<LineDiscoveryPage> {
 
   Future<void> _scan() async {
     _selected.clear();
-    setState(() => _progress = const ScanProgress(stage: '准备中', done: 0, total: 0));
+    setState(
+      () => _progress = const ScanProgress(stage: '准备中', done: 0, total: 0),
+    );
     await _scanner.start();
     if (!mounted) return;
     setState(() {});
@@ -208,7 +195,7 @@ class _LineDiscoveryPageState extends State<LineDiscoveryPage> {
               ),
             ),
           ),
-          if (leaves.isNotEmpty) ...[
+          if (_results.isNotEmpty) ...[
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
               child: TextField(
@@ -256,8 +243,7 @@ class _LineDiscoveryPageState extends State<LineDiscoveryPage> {
                         DropdownMenuItem(value: '单仓', child: Text('单仓')),
                         DropdownMenuItem(value: '多仓', child: Text('多仓')),
                       ],
-                      onChanged: (value) =>
-                          setState(() => _kind = value ?? ''),
+                      onChanged: (value) => setState(() => _kind = value ?? ''),
                     ),
                   ),
                 ],
@@ -297,7 +283,7 @@ class _LineDiscoveryPageState extends State<LineDiscoveryPage> {
                 : visible.isEmpty
                 ? const Center(
                     child: EmptyState(
-                      title: '没有匹配的可用线路',
+                      title: '没有匹配的线路',
                       message: '调整筛选条件，或重新扫描。',
                     ),
                   )
@@ -311,24 +297,33 @@ class _LineDiscoveryPageState extends State<LineDiscoveryPage> {
                       return Card(
                         child: InkWell(
                           borderRadius: BorderRadius.circular(18),
-                          onTap: () => setState(() {
-                            if (!_selected.remove(node.url)) {
-                              _selected.add(node.url);
-                            }
-                          }),
+                          onTap:
+                              !node.available ||
+                                  (node.multi && node.children.isNotEmpty)
+                              ? null
+                              : () => setState(() {
+                                  if (!_selected.remove(node.url)) {
+                                    _selected.add(node.url);
+                                  }
+                                }),
                           child: Padding(
                             padding: const EdgeInsets.fromLTRB(10, 10, 14, 10),
                             child: Row(
                               children: [
                                 Checkbox(
                                   value: checked,
-                                  onChanged: (value) => setState(() {
-                                    if (value ?? false) {
-                                      _selected.add(node.url);
-                                    } else {
-                                      _selected.remove(node.url);
-                                    }
-                                  }),
+                                  onChanged:
+                                      !node.available ||
+                                          (node.multi &&
+                                              node.children.isNotEmpty)
+                                      ? null
+                                      : (value) => setState(() {
+                                          if (value ?? false) {
+                                            _selected.add(node.url);
+                                          } else {
+                                            _selected.remove(node.url);
+                                          }
+                                        }),
                                 ),
                                 Expanded(
                                   child: Column(
@@ -372,11 +367,19 @@ class _LineDiscoveryPageState extends State<LineDiscoveryPage> {
                                         runSpacing: 4,
                                         children: [
                                           _Chip(text: node.kindLabel),
+                                          _Chip(
+                                            text: node.available
+                                                ? '可用'
+                                                : node.status == 'pending'
+                                                ? '待检测'
+                                                : '不可用${node.error == null ? '' : '：${node.error}'}',
+                                          ),
+                                          if (node.note.isNotEmpty)
+                                            _Chip(text: node.note),
                                           if (node.siteCount > 0)
-                                            _Chip(
-                                              text: '${node.siteCount} 站点',
-                                            ),
-                                          _Chip(text: '${node.totalMs}ms'),
+                                            _Chip(text: '${node.siteCount} 站点'),
+                                          if (node.totalMs >= 0)
+                                            _Chip(text: '${node.totalMs}ms'),
                                         ],
                                       ),
                                     ],
@@ -399,9 +402,7 @@ class _LineDiscoveryPageState extends State<LineDiscoveryPage> {
                 padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
                 child: FilledButton(
                   onPressed: _importing || selectedCount == 0 ? null : _import,
-                  child: Text(
-                    _importing ? '导入中…' : '导入所选 $selectedCount 条线路',
-                  ),
+                  child: Text(_importing ? '导入中…' : '导入所选 $selectedCount 条线路'),
                 ),
               ),
             ),
@@ -448,9 +449,8 @@ class _Chip extends StatelessWidget {
   Widget build(BuildContext context) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
     decoration: BoxDecoration(
-      color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(
-        alpha: .6,
-      ),
+      color: Theme.of(context).colorScheme.surfaceContainerHighest
+          .withValues(alpha: .6),
       borderRadius: BorderRadius.circular(6),
     ),
     child: Text(
@@ -461,4 +461,20 @@ class _Chip extends StatelessWidget {
       ),
     ),
   );
+}
+
+/// 显示所有已发现的节点，包括多仓容器及未检测或失败的节点。
+List<ScanNode> discoveryResults(Iterable<ScanNode> roots) {
+  final out = <ScanNode>[];
+  void walk(ScanNode node) {
+    out.add(node);
+    for (final child in node.children) {
+      walk(child);
+    }
+  }
+
+  for (final root in roots) {
+    walk(root);
+  }
+  return out;
 }
