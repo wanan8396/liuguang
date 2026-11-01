@@ -75,12 +75,11 @@ class _HomePageState extends State<HomePage> {
           ),
           actions: [
             IconButton(
-              tooltip: '观看历史',
+              tooltip: '播放历史',
               onPressed: () => Navigator.push(
                 context,
                 MaterialPageRoute<void>(
-                  builder: (_) =>
-                      LibraryPage(controller: c, history: true),
+                  builder: (_) => LibraryPage(controller: c, history: true),
                 ),
               ),
               icon: const Icon(Icons.history),
@@ -136,9 +135,9 @@ class _HomePageState extends State<HomePage> {
                           Text(
                             '搜索想看的影片',
                             style: TextStyle(
-                              color: Theme.of(
-                                context,
-                              ).colorScheme.onSurfaceVariant,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant,
                             ),
                           ),
                           const Spacer(),
@@ -213,9 +212,9 @@ class _HomePageState extends State<HomePage> {
                                       Center(
                                         child: Text(
                                           '${str(row['name'])}  ',
-                                          style: Theme.of(
-                                            context,
-                                          ).textTheme.labelMedium,
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .labelMedium,
                                         ),
                                       ),
                                       for (final v in jsonList(row['value']))

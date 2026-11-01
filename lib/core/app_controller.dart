@@ -63,12 +63,12 @@ class AppController extends ChangeNotifier {
   List<Site> enabledSites([TvConfig? config]) {
     final selected = config ?? currentConfig;
     if (selected == null) return [];
-    final disabled = jsonList(
-      store.setting('disabled:${selected.url}'),
-    ).map(str).toSet();
-    final order = jsonList(
-      store.setting('siteOrder:${selected.url}'),
-    ).map(str).toList();
+    final disabled = jsonList(store.setting('disabled:${selected.url}'))
+        .map(str)
+        .toSet();
+    final order = jsonList(store.setting('siteOrder:${selected.url}'))
+        .map(str)
+        .toList();
     final ordered = <Site>[];
     final byKey = {for (final site in selected.sites) site.key: site};
     for (final key in order) {
@@ -82,9 +82,9 @@ class AppController extends ChangeNotifier {
   bool isSiteEnabled(Site site, [TvConfig? config]) {
     final selected = config ?? currentConfig;
     return selected != null &&
-        !jsonList(
-          store.setting('disabled:${selected.url}'),
-        ).map(str).contains(site.key);
+        !jsonList(store.setting('disabled:${selected.url}'))
+            .map(str)
+            .contains(site.key);
   }
 
   Future<void> setSiteEnabled(
@@ -94,9 +94,9 @@ class AppController extends ChangeNotifier {
   }) async {
     final selected = config ?? currentConfig;
     if (selected == null) return;
-    final disabled = jsonList(
-      store.setting('disabled:${selected.url}'),
-    ).map(str).toSet();
+    final disabled = jsonList(store.setting('disabled:${selected.url}'))
+        .map(str)
+        .toSet();
     enabled ? disabled.remove(site.key) : disabled.add(site.key);
     await store.setSetting('disabled:${selected.url}', disabled.toList());
     if (!enabled &&
@@ -133,9 +133,8 @@ class AppController extends ChangeNotifier {
   Future<Map<String, String>> _loadCredentials(TvConfig config) async {
     final stored = await store.readSecret(_credentialKey(config));
     if (stored == null || stored.isEmpty) return {};
-    return jsonMap(
-      jsonDecode(stored),
-    ).map((key, value) => MapEntry(key, str(value)));
+    return jsonMap(jsonDecode(stored))
+        .map((key, value) => MapEntry(key, str(value)));
   }
 
   Future<List<String>> credentialNames({TvConfig? config}) async {
@@ -191,9 +190,9 @@ class AppController extends ChangeNotifier {
     if (currentConfig != null) {
       final siteKey = str(store.setting('currentSite'));
       currentSite =
-          enabledSites(
-            currentConfig,
-          ).where((site) => site.key == siteKey).firstOrNull ??
+          enabledSites(currentConfig)
+              .where((site) => site.key == siteKey)
+              .firstOrNull ??
           enabledSites(currentConfig).firstOrNull;
     }
     _notify();
@@ -478,7 +477,45 @@ class AppController extends ChangeNotifier {
     return engine.play(selectedConfig, selectedSite, line.name, episode.id);
   }
 
-  Future<void> loadLive() async {
+  Future<void>? _liveLoading;
+  String? _liveLoadingKey;
+  int? _liveLoadingGeneration;
+  List<String> get selectedLiveHelperSources => liveHelperSelection(
+    jsonList(store.setting(liveHelperSettingKey)).map(str),
+  );
+
+  /// Replaces only the optional helper selection, never user subscriptions.
+  Future<void> setLiveHelperSources(Iterable<String> ids) async {
+    final next = liveHelperSelection(ids);
+    if (jsonEncode(next) == jsonEncode(selectedLiveHelperSources)) return;
+    await store.setSetting(liveHelperSettingKey, next);
+    await loadLive();
+  }
+
+  Future<void> loadLive() {
+    final key = jsonEncode([
+      currentConfig?.url,
+      currentSite?.key,
+      store.setting('liveSubscriptions'),
+      selectedLiveHelperSources,
+    ]);
+    if (_liveLoading != null &&
+        _liveLoadingKey == key &&
+        _liveLoadingGeneration == _liveGeneration)
+      return _liveLoading!;
+    late final Future<void> pending;
+    pending = _loadLive().whenComplete(() {
+      if (identical(_liveLoading, pending)) {
+        _liveLoading = null;
+        _liveLoadingKey = null;
+      }
+    });
+    _liveLoadingKey = key;
+    _liveLoadingGeneration = _liveGeneration;
+    return _liveLoading = pending;
+  }
+
+  Future<void> _loadLive() async {
     final config = currentConfig;
     final site = currentSite;
     final generation = ++_liveGeneration;
@@ -491,20 +528,27 @@ class AppController extends ChangeNotifier {
         for (final entry in config.lives) {
           if (generation != _liveGeneration || _disposed) return;
           try {
-            channels.addAll(await _live.load(
-              [entry],
-              baseUrl: config.url,
-              localFetcher: site == null
-                  ? null
-                  : (url) => engine.fetchLocal(config, site, url),
-            ));
+            channels.addAll(
+              await _live.load(
+                [entry],
+                baseUrl: config.url,
+                localFetcher: site == null
+                    ? null
+                    : (url) => engine.fetchLocal(config, site, url),
+              ),
+            );
           } catch (failure) {
-            final name = entry is Map ? str(entry['name'] ?? entry['url']) : str(entry);
+            final name = entry is Map
+                ? str(entry['name'] ?? entry['url'])
+                : str(entry);
             failures.add('$name: $failure');
           }
         }
       }
-      for (final url in jsonList(store.setting('liveSubscriptions')).map(str)) {
+      for (final url in jsonList(
+        store.setting('liveSubscriptions'),
+      ).map(str).where((url) => url.trim().isNotEmpty).toSet()) {
+        if (generation != _liveGeneration || _disposed) return;
         try {
           channels.addAll(await _live.loadUrl(url));
         } catch (failure) {
@@ -512,7 +556,18 @@ class AppController extends ChangeNotifier {
         }
       }
       if (generation != _liveGeneration || _disposed) return;
-      liveChannels = channels;
+      // Helper groups are opt-in and loaded sequentially (never all 15 by default).
+      for (final source in liveHelperSources) {
+        if (!selectedLiveHelperSources.contains(source.id)) continue;
+        if (generation != _liveGeneration || _disposed) return;
+        try {
+          channels.addAll(await _live.loadHelperSource(source));
+        } catch (failure) {
+          failures.add(failure.toString());
+        }
+      }
+      if (generation != _liveGeneration || _disposed) return;
+      liveChannels = _live.mergeChannels(channels);
       if (failures.isNotEmpty) error = failures.join('\n');
     } catch (failure) {
       if (generation == _liveGeneration) error = failure.toString();
@@ -524,8 +579,10 @@ class AppController extends ChangeNotifier {
       engine.playLive(currentConfig, currentSite, channel, index: index);
 
   Future<void> addLiveSubscription(String url) async {
-    final urls = jsonList(store.setting('liveSubscriptions')).map(str).toSet()
-      ..add(url.trim());
+    final value = url.trim();
+    if (value.isEmpty) return;
+    final urls = jsonList(store.setting('liveSubscriptions')).map(str).toSet();
+    if (!urls.add(value)) return;
     await store.setSetting('liveSubscriptions', urls.toList());
     await loadLive();
   }

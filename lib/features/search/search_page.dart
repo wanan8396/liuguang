@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../core/app_controller.dart';
+import '../../core/search/search_concurrency.dart';
 import '../../ui/components.dart';
 import '../detail/detail_page.dart';
 
@@ -26,6 +27,31 @@ class _SearchPageState extends State<SearchPage> {
   final _errors = <String>[];
   bool _all = false, _busy = false, _searched = false;
   int _generation = 0, _done = 0, _total = 0, _page = 1, _pageCount = 1;
+  late int _concurrency;
+  bool _savingConcurrency = false;
+  @override
+  void initState() {
+    super.initState();
+    _concurrency = SearchConcurrency.fromSetting(
+      widget.controller.store.setting(SearchConcurrency.settingKey),
+    );
+  }
+
+  Future<void> _setConcurrency(int value) async {
+    setState(() => _savingConcurrency = true);
+    try {
+      await widget.controller.store.setSetting(
+        SearchConcurrency.settingKey,
+        value,
+      );
+      if (mounted) setState(() => _concurrency = value);
+    } catch (error) {
+      if (mounted) showMessage(context, '保存搜索并发失败：$error');
+    } finally {
+      if (mounted) setState(() => _savingConcurrency = false);
+    }
+  }
+
   String _keyword = '';
   String? _siteFilter;
   TvConfig? _config;
@@ -74,12 +100,9 @@ class _SearchPageState extends State<SearchPage> {
       while (cursor < targets.length && generation == _generation) {
         final (config, site) = targets[cursor++];
         try {
-          final result = await c.search(
-            _keyword,
-            site: site,
-            config: config,
-            page: requestedPage,
-          );
+          final result = await c
+              .search(_keyword, site: site, config: config, page: requestedPage)
+              .timeout(SearchConcurrency.sourceTimeout);
           if (!mounted || generation != _generation) return;
           _page = requestedPage;
           _pageCount = result.pageCount;
@@ -95,9 +118,9 @@ class _SearchPageState extends State<SearchPage> {
       }
     }
 
-    // 三个并发在保证来源可追溯的前提下，限制网络与插件压力。
+    // 异步 I/O 并发，不创建 Dart 线程；本次任务使用启动时的并发上限。
     await Future.wait(
-      List.generate(targets.length.clamp(0, 3), (_) => worker()),
+      List.generate(targets.length.clamp(0, _concurrency), (_) => worker()),
     );
     if (mounted && generation == _generation) setState(() => _busy = false);
   }
@@ -192,6 +215,35 @@ class _SearchPageState extends State<SearchPage> {
               ],
             ),
           ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                const Text('搜索并发'),
+                const SizedBox(width: 12),
+                DropdownButton<int>(
+                  key: const ValueKey('search-concurrency'),
+                  value: _concurrency,
+                  items: [
+                    for (final value in SearchConcurrency.options)
+                      DropdownMenuItem(value: value, child: Text('$value')),
+                  ],
+                  onChanged: _busy || _savingConcurrency
+                      ? null
+                      : (value) {
+                          if (value != null) _setConcurrency(value);
+                        },
+                ),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Text(
+                    '异步 I/O · 高并发会增加网络与插件负载',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                ),
+              ],
+            ),
+          ),
           if (_errors.isNotEmpty)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -242,8 +294,7 @@ class _SearchPageState extends State<SearchPage> {
                       Expanded(
                         child: ListView.separated(
                           padding: const EdgeInsets.fromLTRB(12, 8, 16, 20),
-                          itemCount:
-                              visible.length + (_showMore ? 1 : 0),
+                          itemCount: visible.length + (_showMore ? 1 : 0),
                           separatorBuilder: (_, _) =>
                               const SizedBox(height: 10),
                           itemBuilder: (context, index) {
@@ -342,9 +393,8 @@ class _RailItem extends StatelessWidget {
     child: Material(
       color: active
           ? color
-          : Theme.of(context).colorScheme.surfaceContainerHighest.withValues(
-              alpha: .55,
-            ),
+          : Theme.of(context).colorScheme.surfaceContainerHighest
+                .withValues(alpha: .55),
       borderRadius: BorderRadius.circular(10),
       child: InkWell(
         borderRadius: BorderRadius.circular(10),
@@ -374,9 +424,8 @@ class _RailItem extends StatelessWidget {
                   style: TextStyle(
                     fontSize: 10,
                     color: active
-                        ? Theme.of(
-                            context,
-                          ).colorScheme.onPrimary.withValues(alpha: .8)
+                        ? Theme.of(context).colorScheme.onPrimary
+                              .withValues(alpha: .8)
                         : Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
                 ),
@@ -436,9 +485,10 @@ class _ResultCard extends StatelessWidget {
                       Text(
                         vod.remarks.isNotEmpty
                             ? vod.remarks
-                            : [vod.year, vod.area]
-                                  .where((e) => e.isNotEmpty)
-                                  .join(' · '),
+                            : [
+                                vod.year,
+                                vod.area,
+                              ].where((e) => e.isNotEmpty).join(' · '),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(

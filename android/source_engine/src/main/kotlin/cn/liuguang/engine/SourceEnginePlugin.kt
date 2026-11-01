@@ -14,7 +14,11 @@ class SourceEnginePlugin private constructor(private val activity: Activity,priv
     private val lifecycle=EngineLifecycle<EngineSession>()
     private val sessions=lifecycle.sessions
     private val jobs=ConcurrentHashMap<String,MutableSet<FutureTask<Unit>>>()
-    private val executor=Executors.newFixedThreadPool(4)
+    // Source calls block on network/plugin I/O. Match the UI default fan-out
+    // instead of silently serializing aggregate search behind four workers.
+    // Keep one owned executor so jobs, cancel, cleanup and shutdown retain
+    // their existing lifecycle and per-session locking guarantees.
+    private val executor=Executors.newFixedThreadPool(16)
     private val main=Handler(Looper.getMainLooper())
     private val proxy=LocalProxy(lifecycle)
     private val sniffer=WebSniffer(activity)
