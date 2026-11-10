@@ -116,6 +116,8 @@ class _DetailPageState extends State<DetailPage> {
   @override
   Widget build(BuildContext context) {
     final vod = _detail?.vod ?? widget.vod;
+    // Retain the list's cover; some plugins return an obsolete CDN in detail.
+    final cover = widget.vod.pic.isNotEmpty ? widget.vod : vod;
     final lines = _detail?.lines ?? <PlayLine>[];
     final history = _history;
     return Scaffold(
@@ -130,7 +132,7 @@ class _DetailPageState extends State<DetailPage> {
               await SharePlus.instance.share(
                 ShareParams(
                   text:
-                      '${vod.name}\n来源：${widget.config.name} / ${widget.site.name}\n影片 ID：${vod.id}',
+                      '${vod.name}\n来源：${widget.controller.configName(widget.config)} / ${widget.site.name}\n影片 ID：${vod.id}',
                   sharePositionOrigin: box == null
                       ? null
                       : box.localToGlobal(Offset.zero) & box.size,
@@ -153,8 +155,14 @@ class _DetailPageState extends State<DetailPage> {
                     width: 108,
                     height: 154,
                     child: Poster(
-                      url: vod.pic,
-                      headers: imageHeaders(widget.config, widget.site, vod),
+                      url: cover.pic,
+                      headers: imageHeaders(widget.config, widget.site, cover),
+                      fallbackUrl: vod.pic,
+                      fallbackHeaders: imageHeaders(
+                        widget.config,
+                        widget.site,
+                        vod,
+                      ),
                     ),
                   ),
                   const SizedBox(width: 16),

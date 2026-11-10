@@ -65,6 +65,7 @@ internal class LocalProxy(private val lifecycle: EngineLifecycle<EngineSession>)
                 request.headers["range"]?.let { builder.header("Range",it) }
                 if(request.method==Method.HEAD) builder.head()
                 val upstream=HostHttp.execute(s.id,builder.build())
+                val finalUrl=upstream.request.url.toString()
                 val responseBody=upstream.body
                 val mime=upstream.header("Content-Type").orEmpty().lowercase()
                 val prefix=responseBody?.source()?.peek()?.readByteArray(minOf(responseBody.contentLength().takeIf { it>=0 } ?: 8,8))?.toString(Charsets.UTF_8).orEmpty()
@@ -73,8 +74,8 @@ internal class LocalProxy(private val lifecycle: EngineLifecycle<EngineSession>)
                     upstream.close(); require(manifest.size<=4*1024*1024) { "HLS manifest exceeds 4MiB" }
                     val rewritten=manifest.toString(Charsets.UTF_8).lineSequence().joinToString("\n") { line ->
                         if(line.isBlank()) line
-                        else if(line.startsWith("#")) Regex("URI=\"([^\"]+)\"").replace(line) { match -> "URI=\""+stream(s,EngineRules.resolve(target.url,match.groupValues[1]),target.headers)+"\"" }
-                        else stream(s,EngineRules.resolve(target.url,line.trim()),target.headers)
+                        else if(line.startsWith("#")) Regex("URI=\"([^\"]+)\"").replace(line) { match -> "URI=\""+stream(s,EngineRules.resolve(finalUrl,match.groupValues[1]),target.headers)+"\"" }
+                        else stream(s,EngineRules.resolve(finalUrl,line.trim()),target.headers)
                     }
                     return newFixedLengthResponse(Response.Status.OK,"application/vnd.apple.mpegurl",rewritten)
                 }

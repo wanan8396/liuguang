@@ -88,7 +88,9 @@ class _SearchPageState extends State<SearchPage> {
           );
         } catch (error) {
           if (!mounted || generation != _generation) return;
-          _errors.add('${config.name} / ${site.name}：$error');
+          _errors.add(
+            '${widget.controller.configName(config)} / ${site.name}：$error',
+          );
         }
         if (!mounted || generation != _generation) return;
         setState(() => _done++);
@@ -242,8 +244,7 @@ class _SearchPageState extends State<SearchPage> {
                       Expanded(
                         child: ListView.separated(
                           padding: const EdgeInsets.fromLTRB(12, 8, 16, 20),
-                          itemCount:
-                              visible.length + (_showMore ? 1 : 0),
+                          itemCount: visible.length + (_showMore ? 1 : 0),
                           separatorBuilder: (_, _) =>
                               const SizedBox(height: 10),
                           itemBuilder: (context, index) {
@@ -342,9 +343,9 @@ class _RailItem extends StatelessWidget {
     child: Material(
       color: active
           ? color
-          : Theme.of(context).colorScheme.surfaceContainerHighest.withValues(
-              alpha: .55,
-            ),
+          : Theme.of(
+              context,
+            ).colorScheme.surfaceContainerHighest.withValues(alpha: .55),
       borderRadius: BorderRadius.circular(10),
       child: InkWell(
         borderRadius: BorderRadius.circular(10),
@@ -436,9 +437,10 @@ class _ResultCard extends StatelessWidget {
                       Text(
                         vod.remarks.isNotEmpty
                             ? vod.remarks
-                            : [vod.year, vod.area]
-                                  .where((e) => e.isNotEmpty)
-                                  .join(' · '),
+                            : [
+                                vod.year,
+                                vod.area,
+                              ].where((e) => e.isNotEmpty).join(' · '),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(

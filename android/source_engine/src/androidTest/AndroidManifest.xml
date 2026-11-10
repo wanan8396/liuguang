@@ -1,0 +1,4 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Match the app host: subscribed sources can contain ordinary HTTP URLs. -->
+    <application android:usesCleartextTraffic="true" />
+</manifest>

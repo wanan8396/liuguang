@@ -4,6 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:html/parser.dart' as html;
 
 import '../core/app_controller.dart';
+import '../core/network/image_request.dart';
+import 'overlays.dart';
+export 'overlays.dart';
 
 String plainText(String text) => html.parseFragment(text).text ?? '';
 String timeLabel(Duration value) {
@@ -83,16 +86,41 @@ Future<bool> confirm(
     await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
+        icon: Container(
+          width: 52,
+          height: 52,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: Theme.of(
+              context,
+            ).colorScheme.primaryContainer.withValues(alpha: .5),
+            borderRadius: BorderRadius.circular(17),
+          ),
+          child: Icon(
+            Icons.help_outline_rounded,
+            color: Theme.of(context).colorScheme.primary,
+            size: 26,
+          ),
+        ),
         title: Text(title),
         content: Text(message),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('确认'),
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton.tonal(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text('取消'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: FilledButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text('确认'),
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -185,11 +213,20 @@ class ErrorNotice extends StatelessWidget {
 }
 
 class Poster extends StatelessWidget {
-  const Poster({super.key, required this.url, this.headers = const {}});
+  const Poster({
+    super.key,
+    required this.url,
+    this.headers = const {},
+    this.fallbackUrl = '',
+    this.fallbackHeaders = const {},
+  });
   final String url;
   final Map<String, String> headers;
+  final String fallbackUrl;
+  final Map<String, String> fallbackHeaders;
   @override
   Widget build(BuildContext context) {
+    final request = ImageRequest.parse(url, headers: headers);
     final placeholder = ColoredBox(
       color: Theme.of(context).colorScheme.surfaceContainerHighest,
       child: Center(
@@ -200,18 +237,23 @@ class Poster extends StatelessWidget {
         ),
       ),
     );
+    Widget load(ImageRequest image, {Widget? fallback}) => Image.network(
+      image.url,
+      headers: image.headers,
+      fit: BoxFit.cover,
+      errorBuilder: (_, _, _) => fallback ?? placeholder,
+      loadingBuilder: (_, child, progress) =>
+          progress == null ? child : placeholder,
+    );
+    final backup = ImageRequest.parse(fallbackUrl, headers: fallbackHeaders);
+    final fallback = backup.url.isNotEmpty && backup.url != request.url
+        ? load(backup)
+        : null;
     return ClipRRect(
       borderRadius: BorderRadius.circular(12),
-      child: url.trim().isEmpty
-          ? placeholder
-          : Image.network(
-              url,
-              headers: headers,
-              fit: BoxFit.cover,
-              errorBuilder: (_, _, _) => placeholder,
-              loadingBuilder: (_, child, progress) =>
-                  progress == null ? child : placeholder,
-            ),
+      child: request.url.isEmpty
+          ? fallback ?? placeholder
+          : load(request, fallback: fallback),
     );
   }
 }
@@ -299,58 +341,287 @@ Future<void> chooseSource(
   BuildContext context,
   AppController controller,
 ) async {
-  await showModalBottomSheet<void>(
-    context: context,
-    isScrollControlled: true,
-    showDragHandle: true,
-    builder: (sheetContext) => SafeArea(
-      child: SizedBox(
-        height: MediaQuery.sizeOf(sheetContext).height * .72,
-        child: ListenableBuilder(
-          listenable: controller,
-          builder: (menuContext, _) => ListView(
-            padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
-            children: [
-              Text('选择内容源', style: Theme.of(context).textTheme.titleLarge),
-              const SizedBox(height: 8),
-              if (controller.configs.isEmpty)
-                const Text('暂无订阅，请到「我的 → 订阅管理」添加。'),
-              for (final config in controller.configs)
-                ExpansionTile(
-                  initiallyExpanded:
-                      config.url == controller.currentConfig?.url,
-                  tilePadding: EdgeInsets.zero,
-                  title: Text(config.name),
-                  subtitle: Text('${config.sites.length} 个站点'),
-                  children: [
-                    for (final site in controller.enabledSites(config))
-                      ListTile(
-                        leading: Icon(
-                          site.key == controller.currentSite?.key &&
-                                  config.url == controller.currentConfig?.url
-                              ? Icons.radio_button_checked
-                              : Icons.radio_button_unchecked,
+  final selection = await showAppSheet<(TvConfig, Site)>(
+    context,
+    builder: (_) => _SourcePicker(controller: controller),
+  );
+  if (selection == null || !context.mounted) return;
+  await runUi(context, () async {
+    final (config, site) = selection;
+    await controller.selectSource(config, site);
+  });
+}
+
+class _SourcePicker extends StatefulWidget {
+  const _SourcePicker({required this.controller});
+  final AppController controller;
+  @override
+  State<_SourcePicker> createState() => _SourcePickerState();
+}
+
+class _SourcePickerState extends State<_SourcePicker> {
+  String? _repo;
+  String? _subscription;
+  String _query = '';
+  final _search = TextEditingController();
+  @override
+  void initState() {
+    super.initState();
+    _repo =
+        widget.controller.currentConfig?.url ??
+        widget.controller.configs.firstOrNull?.url;
+  }
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: widget.controller,
+    builder: (context, _) {
+      final c = widget.controller;
+      final colors = Theme.of(context).colorScheme;
+      final subscriptions = c.subscriptions;
+      final entry = subscriptions
+          .where((s) => s.url == _subscription)
+          .firstOrNull;
+      final entryUrls = entry?.configs.map((r) => r.url).toSet();
+      final configs = c.configs
+          .where((r) => entryUrls == null || entryUrls.contains(r.url))
+          .toList();
+      final selected =
+          configs.where((r) => r.url == _repo).firstOrNull ??
+          configs.firstOrNull;
+      final query = _query.trim().toLowerCase();
+      final matches = <(TvConfig, Site)>[
+        for (final config in configs)
+          if (query.isNotEmpty || config.url == selected?.url)
+            for (final site in c.enabledSites(config))
+              if (query.isEmpty ||
+                  '${c.configName(config)} ${site.name}'.toLowerCase().contains(
+                    query,
+                  ))
+                (config, site),
+      ];
+      return AppSheet(
+        title: '选择内容源',
+        subtitle: '${configs.length} 个仓库 · 发现更多好内容',
+        icon: Icons.video_library_outlined,
+        heightFraction: .84,
+        child: Column(
+          children: [
+            if (subscriptions.length > 1)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+                child: DropdownButtonFormField<String>(
+                  initialValue: _subscription ?? '',
+                  isExpanded: true,
+                  decoration: const InputDecoration(
+                    prefixIcon: Icon(Icons.subscriptions_outlined, size: 20),
+                    contentPadding: EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
+                  ),
+                  items: [
+                    const DropdownMenuItem(
+                      value: '',
+                      child: Text('全部订阅', style: TextStyle(fontSize: 14)),
+                    ),
+                    for (final s in subscriptions)
+                      DropdownMenuItem(
+                        value: s.url,
+                        child: Text(
+                          c.subscriptionName(s.url),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 14),
                         ),
-                        title: Text(site.name),
-                        subtitle: Text(site.runtime.toUpperCase()),
-                        onTap: () async {
-                          Navigator.pop(sheetContext);
-                          await runUi(context, () async {
-                            if (controller.currentConfig?.url != config.url) {
-                              await controller.selectConfig(config);
-                            }
-                            if (controller.currentSite?.key != site.key) {
-                              await controller.selectSite(site);
-                            }
-                          });
-                        },
                       ),
                   ],
+                  onChanged: (value) => setState(() {
+                    _subscription = value?.isEmpty == true ? null : value;
+                    _repo = null;
+                  }),
                 ),
-            ],
-          ),
+              ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+              child: TextField(
+                controller: _search,
+                onChanged: (value) => setState(() => _query = value),
+                decoration: InputDecoration(
+                  hintText: '搜索仓库或内容源',
+                  hintStyle: TextStyle(
+                    fontSize: 14,
+                    color: colors.onSurfaceVariant,
+                  ),
+                  prefixIcon: const Icon(Icons.search_rounded, size: 21),
+                  suffixIcon: _query.isEmpty
+                      ? null
+                      : IconButton(
+                          tooltip: '清空搜索',
+                          icon: const Icon(Icons.close_rounded, size: 18),
+                          onPressed: () {
+                            _search.clear();
+                            setState(() => _query = '');
+                          },
+                        ),
+                  contentPadding: const EdgeInsets.symmetric(vertical: 12),
+                ),
+              ),
+            ),
+            Expanded(
+              child: configs.isEmpty
+                  ? const EmptyState(
+                      title: '还没有内容源',
+                      message: '添加视频订阅后，就可以在这里切换。',
+                    )
+                  : Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        if (query.isEmpty)
+                          Container(
+                            width: MediaQuery.sizeOf(context).width < 380
+                                ? 92
+                                : 108,
+                            margin: const EdgeInsets.only(left: 12, bottom: 12),
+                            decoration: BoxDecoration(
+                              color: colors.surfaceContainerLow,
+                              borderRadius: BorderRadius.circular(18),
+                            ),
+                            child: ListView.builder(
+                              padding: const EdgeInsets.all(6),
+                              itemCount: configs.length,
+                              itemBuilder: (context, index) {
+                                final config = configs[index];
+                                final active = config.url == selected?.url;
+                                return Padding(
+                                  padding: const EdgeInsets.only(bottom: 4),
+                                  child: Material(
+                                    color: active
+                                        ? colors.surface
+                                        : Colors.transparent,
+                                    borderRadius: BorderRadius.circular(13),
+                                    child: InkWell(
+                                      borderRadius: BorderRadius.circular(13),
+                                      onTap: () =>
+                                          setState(() => _repo = config.url),
+                                      child: Semantics(
+                                        selected: active,
+                                        button: true,
+                                        child: Padding(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 10,
+                                            vertical: 15,
+                                          ),
+                                          child: Text(
+                                            c.configName(config),
+                                            maxLines: 2,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: TextStyle(
+                                              fontSize: 13,
+                                              fontWeight: active
+                                                  ? FontWeight.w700
+                                                  : FontWeight.w500,
+                                              color: active
+                                                  ? colors.primary
+                                                  : colors.onSurfaceVariant,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Padding(
+                                padding: const EdgeInsets.fromLTRB(
+                                  16,
+                                  0,
+                                  16,
+                                  10,
+                                ),
+                                child: Text(
+                                  query.isEmpty
+                                      ? '${c.configName(selected)} · ${matches.length} 个源'
+                                      : '找到 ${matches.length} 个内容源',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: colors.onSurfaceVariant,
+                                  ),
+                                ),
+                              ),
+                              Expanded(
+                                child: matches.isEmpty
+                                    ? Center(
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(20),
+                                          child: Text(
+                                            query.isEmpty
+                                                ? '此仓库暂无已启用的内容源'
+                                                : '没有找到匹配的内容源',
+                                            style: TextStyle(
+                                              color: colors.onSurfaceVariant,
+                                            ),
+                                          ),
+                                        ),
+                                      )
+                                    : ListView.builder(
+                                        key: ValueKey(
+                                          '$query|${selected?.url}',
+                                        ),
+                                        padding: const EdgeInsets.fromLTRB(
+                                          12,
+                                          0,
+                                          16,
+                                          20,
+                                        ),
+                                        itemCount: matches.length,
+                                        itemBuilder: (context, index) {
+                                          final (config, site) = matches[index];
+                                          return AppChoiceTile(
+                                            title: site.name,
+                                            subtitle:
+                                                c.shortDramaFallback(
+                                                      config,
+                                                      site,
+                                                    ) !=
+                                                    null
+                                                ? '备用直达 · ${c.shortDramaFallback(config, site)!.name}'
+                                                : query.isEmpty
+                                                ? null
+                                                : c.configName(config),
+                                            selected:
+                                                config.url ==
+                                                    c.currentConfig?.url &&
+                                                site.key == c.currentSite?.key,
+                                            onTap: () => Navigator.pop(
+                                              context,
+                                              (config, site),
+                                            ),
+                                          );
+                                        },
+                                      ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+            ),
+          ],
         ),
-      ),
-    ),
+      );
+    },
   );
 }

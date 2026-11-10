@@ -45,6 +45,7 @@ android/native-integration.patch
 android/tools/ROLLBACK.cmd
 android/tools/build-fixture.ps1
 artifacts/
+dist/
 RECOVERY-CT.md
 docs/implementation-contract.md
 docs/compatibility-matrix.md

@@ -5,19 +5,21 @@ import '../../core/discovery/line_scanner.dart';
 import '../../ui/components.dart';
 
 class LineDiscoveryPage extends StatefulWidget {
-  const LineDiscoveryPage({super.key, required this.controller});
+  const LineDiscoveryPage({super.key, required this.controller, this.scanner});
   final AppController controller;
+  final LineScanner? scanner;
   @override
   State<LineDiscoveryPage> createState() => _LineDiscoveryPageState();
 }
 
 class _LineDiscoveryPageState extends State<LineDiscoveryPage> {
-  final _scanner = LineScanner();
+  late final _scanner = widget.scanner ?? LineScanner();
   ScanProgress? _progress;
   final _selected = <String>{};
   String _query = '';
   String _speed = '';
   String _kind = '';
+  String? _importError;
   bool _importing = false;
 
   @override
@@ -35,25 +37,7 @@ class _LineDiscoveryPageState extends State<LineDiscoveryPage> {
   }
 
   /// 把多仓节点展开成可独立选择的叶子线路。
-  List<ScanNode> get _leaves {
-    final out = <ScanNode>[];
-    void walk(ScanNode node) {
-      final expanded = node.multi && node.children.isNotEmpty;
-      if (expanded) {
-        for (final child in node.children) {
-          walk(child);
-        }
-      } else if (node.available) {
-        out.add(node);
-      }
-    }
-
-    for (final root in _scanner.roots) {
-      walk(root);
-    }
-    out.sort((a, b) => a.totalMs.compareTo(b.totalMs));
-    return out;
-  }
+  List<ScanNode> get _leaves => _scanner.verifiedLines;
 
   List<ScanNode> get _visible {
     final leaves = _leaves;
@@ -70,7 +54,10 @@ class _LineDiscoveryPageState extends State<LineDiscoveryPage> {
 
   Future<void> _scan() async {
     _selected.clear();
-    setState(() => _progress = const ScanProgress(stage: '准备中', done: 0, total: 0));
+    _importError = null;
+    setState(
+      () => _progress = const ScanProgress(stage: '准备中', done: 0, total: 0),
+    );
     await _scanner.start();
     if (!mounted) return;
     setState(() {});
@@ -88,13 +75,39 @@ class _LineDiscoveryPageState extends State<LineDiscoveryPage> {
       showMessage(context, '请先选择至少一条可用线路');
       return;
     }
-    setState(() => _importing = true);
+    setState(() {
+      _importing = true;
+      _importError = null;
+    });
     try {
-      final text = buildImportConfig(chosen, name: '线路发现 ${chosen.length} 条');
-      await widget.controller.importText(text, name: '线路发现 ${chosen.length} 条');
+      final controller = widget.controller;
+      final existing = controller.subscriptions.map((item) => item.url).toSet();
+      await controller.importSubscriptions(
+        chosen.map((node) => node.url),
+        addOnly: true,
+      );
+      final added = controller.importQueue
+          .where((item) => ['ready', 'partial'].contains(item.status))
+          .length;
+      final retained = controller.importQueue
+          .where((item) => item.status == 'existing')
+          .length;
+      final failed = chosen.length - added - retained;
+      _importError = controller.importQueue
+          .where((item) => ['error', 'cancelled'].contains(item.status))
+          .map((item) => '${item.url}\n${item.error ?? '已取消'}')
+          .join('\n');
+      if (_importError!.isEmpty) _importError = null;
+      for (final node in chosen) {
+        if (!existing.contains(node.url) &&
+            node.name.trim().isNotEmpty &&
+            controller.subscriptions.any((item) => item.url == node.url)) {
+          await controller.renameSubscription(node.url, node.name);
+        }
+      }
       if (!mounted) return;
-      showMessage(context, '已导入 ${chosen.length} 条线路');
-      Navigator.pop(context);
+      showMessage(context, '已追加 $added 条 · 已有 $retained 条 · 失败 $failed 条');
+      if (failed == 0) Navigator.pop(context);
     } catch (error) {
       if (mounted) showMessage(context, '$error');
     } finally {
@@ -237,6 +250,7 @@ class _LineDiscoveryPageState extends State<LineDiscoveryPage> {
                         DropdownMenuItem(value: '快', child: Text('快 <500ms')),
                         DropdownMenuItem(value: '中', child: Text('中 <2s')),
                         DropdownMenuItem(value: '慢', child: Text('慢 <5s')),
+                        DropdownMenuItem(value: '很慢', child: Text('很慢 ≥5s')),
                       ],
                       onChanged: (value) =>
                           setState(() => _speed = value ?? ''),
@@ -256,8 +270,7 @@ class _LineDiscoveryPageState extends State<LineDiscoveryPage> {
                         DropdownMenuItem(value: '单仓', child: Text('单仓')),
                         DropdownMenuItem(value: '多仓', child: Text('多仓')),
                       ],
-                      onChanged: (value) =>
-                          setState(() => _kind = value ?? ''),
+                      onChanged: (value) => setState(() => _kind = value ?? ''),
                     ),
                   ),
                 ],
@@ -268,7 +281,7 @@ class _LineDiscoveryPageState extends State<LineDiscoveryPage> {
               child: Row(
                 children: [
                   Text(
-                    '可用 $available · 显示 ${visible.length}',
+                    '配置有效 $available · 显示 ${visible.length}',
                     style: TextStyle(
                       fontSize: 12,
                       color: scheme.onSurfaceVariant,
@@ -283,6 +296,11 @@ class _LineDiscoveryPageState extends State<LineDiscoveryPage> {
               ),
             ),
           ],
+          if (_importError != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+              child: ErrorNotice(error: _importError!, onRetry: _import),
+            ),
           Expanded(
             child: _scanner.roots.isEmpty
                 ? Center(
@@ -373,9 +391,7 @@ class _LineDiscoveryPageState extends State<LineDiscoveryPage> {
                                         children: [
                                           _Chip(text: node.kindLabel),
                                           if (node.siteCount > 0)
-                                            _Chip(
-                                              text: '${node.siteCount} 站点',
-                                            ),
+                                            _Chip(text: '${node.siteCount} 站点'),
                                           _Chip(text: '${node.totalMs}ms'),
                                         ],
                                       ),
@@ -399,9 +415,7 @@ class _LineDiscoveryPageState extends State<LineDiscoveryPage> {
                 padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
                 child: FilledButton(
                   onPressed: _importing || selectedCount == 0 ? null : _import,
-                  child: Text(
-                    _importing ? '导入中…' : '导入所选 $selectedCount 条线路',
-                  ),
+                  child: Text(_importing ? '追加中…' : '追加所选 $selectedCount 条订阅'),
                 ),
               ),
             ),
@@ -448,9 +462,9 @@ class _Chip extends StatelessWidget {
   Widget build(BuildContext context) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
     decoration: BoxDecoration(
-      color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(
-        alpha: .6,
-      ),
+      color: Theme.of(
+        context,
+      ).colorScheme.surfaceContainerHighest.withValues(alpha: .6),
       borderRadius: BorderRadius.circular(6),
     ),
     child: Text(

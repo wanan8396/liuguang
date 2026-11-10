@@ -173,13 +173,8 @@ class SubscriptionRepository {
         ),
       );
       final chain = {...ancestors, normalized, finalNormalized};
-      for (final child in children) {
+      for (final (childName, reference) in repositoryEntries(raw)) {
         if (state.generation != _generation) break;
-        final map = child is Map ? jsonMap(child) : <String, dynamic>{};
-        final reference = child is String
-            ? child
-            : str(map['url'] ?? map['source']);
-        final childName = str(map['name']);
         if (reference.trim().isEmpty) {
           state.add(
             RepoNode(
@@ -192,9 +187,21 @@ class SubscriptionRepository {
           );
           continue;
         }
-        final resolved = Uri.parse(
-          finalUrl,
-        ).resolve(reference.trim()).toString();
+        final String resolved;
+        try {
+          resolved = Uri.parse(finalUrl).resolve(reference.trim()).toString();
+        } on FormatException catch (e) {
+          state.add(
+            RepoNode(
+              url: reference,
+              name: childName.isEmpty ? reference : childName,
+              parentUrl: finalUrl,
+              status: 'error',
+              error: 'Invalid repository URL: $e',
+            ),
+          );
+          continue;
+        }
         await _visit(
           state,
           resolved,
@@ -208,6 +215,25 @@ class SubscriptionRepository {
       if (state.generation == _generation) error(e);
     }
   }
+}
+
+List<(String, String)> repositoryEntries(Map<String, dynamic> raw) => [
+  for (final item in [...jsonList(raw['urls']), ...jsonList(raw['storeHouse'])])
+    if (item is String)
+      ('', item)
+    else
+      (
+        _entryValue(jsonMap(item), ['name', 'sourceName']),
+        _entryValue(jsonMap(item), ['url', 'sourceUrl', 'source', 'api']),
+      ),
+];
+
+String _entryValue(Map<String, dynamic> entry, List<String> keys) {
+  for (final key in keys) {
+    final value = str(entry[key]).trim();
+    if (value.isNotEmpty) return value;
+  }
+  return '';
 }
 
 Object? _canonical(Object? value) {

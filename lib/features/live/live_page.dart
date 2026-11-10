@@ -34,6 +34,19 @@ class _LivePageState extends State<LivePage> {
     if (mounted) setState(() => _loading = false);
   }
 
+  Future<void> _showSources() => showAppSheet<void>(
+    context,
+    builder: (context) => AppSheet(
+      title: '直播来源状态',
+      subtitle: '已显示 ${c.liveChannels.length} 个频道，失败来源不影响其他频道',
+      icon: Icons.info_outline_rounded,
+      child: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [SelectableText(c.liveError ?? '全部来源加载完成')],
+      ),
+    ),
+  );
+
   bool _favorite(LiveChannel channel) => c.store.liveFavorites.any(
     (item) =>
         item.name == channel.name &&
@@ -82,76 +95,69 @@ class _LivePageState extends State<LivePage> {
       url,
       () => LiveRepository(c.http).loadEpg(url, headers: channel.headers),
     );
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      builder: (context) => SafeArea(
-        child: SizedBox(
-          height: MediaQuery.sizeOf(context).height * .7,
-          child: FutureBuilder<EpgGuide>(
-            future: future,
-            builder: (context, snapshot) {
-              if (snapshot.hasError) {
-                return ErrorNotice(
-                  error: '${snapshot.error}',
-                  onRetry: () {
-                    _guides.remove(url);
-                    Navigator.pop(context);
-                    _epg(channel);
-                  },
-                );
-              }
-              if (!snapshot.hasData) {
-                return const Center(child: CircularProgressIndicator());
-              }
-              final guide = snapshot.data!;
-              final id = guide.channels.containsKey(channel.tvgId)
-                  ? channel.tvgId
-                  : guide.channels.entries
-                            .where((entry) => entry.value == channel.name)
-                            .map((entry) => entry.key)
-                            .firstOrNull ??
-                        channel.name;
-              final programmes = guide.forChannel(id)
-                ..sort((a, b) => a.start.compareTo(b.start));
-              final now = guide.now(id), next = guide.next(id);
-              return ListView(
-                padding: const EdgeInsets.all(20),
-                children: [
-                  Text(
-                    '${channel.name} · 节目单',
-                    style: Theme.of(context).textTheme.titleLarge,
-                  ),
-                  const SizedBox(height: 12),
-                  Text('正在播出：${now?.title ?? '暂无信息'}'),
-                  Text('即将播出：${next?.title ?? '暂无信息'}'),
-                  const Divider(height: 28),
-                  if (programmes.isEmpty)
-                    const EmptyState(
-                      title: '没有匹配的节目',
-                      message: '请检查频道的 tvg-id 与节目单数据是否一致。',
-                    ),
-                  for (final programme in programmes)
-                    ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      leading: Text(
-                        TimeOfDay.fromDateTime(
-                          programme.start.toLocal(),
-                        ).format(context),
-                      ),
-                      title: Text(programme.title),
-                      subtitle: programme.description.isEmpty
-                          ? null
-                          : Text(programme.description),
-                      trailing: identical(now, programme)
-                          ? const Chip(label: Text('正在播出'))
-                          : null,
-                    ),
-                ],
+    await showAppSheet<void>(
+      context,
+      builder: (context) => AppSheet(
+        title: '节目单',
+        subtitle: channel.name,
+        icon: Icons.calendar_today_rounded,
+        child: FutureBuilder<EpgGuide>(
+          future: future,
+          builder: (context, snapshot) {
+            if (snapshot.hasError) {
+              return ErrorNotice(
+                error: '${snapshot.error}',
+                onRetry: () {
+                  _guides.remove(url);
+                  Navigator.pop(context);
+                  _epg(channel);
+                },
               );
-            },
-          ),
+            }
+            if (!snapshot.hasData) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            final guide = snapshot.data!;
+            final id = guide.channels.containsKey(channel.tvgId)
+                ? channel.tvgId
+                : guide.channels.entries
+                          .where((entry) => entry.value == channel.name)
+                          .map((entry) => entry.key)
+                          .firstOrNull ??
+                      channel.name;
+            final programmes = guide.forChannel(id)
+              ..sort((a, b) => a.start.compareTo(b.start));
+            final now = guide.now(id), next = guide.next(id);
+            return ListView(
+              padding: const EdgeInsets.all(20),
+              children: [
+                Text('正在播出：${now?.title ?? '暂无信息'}'),
+                Text('即将播出：${next?.title ?? '暂无信息'}'),
+                const Divider(height: 28),
+                if (programmes.isEmpty)
+                  const EmptyState(
+                    title: '没有匹配的节目',
+                    message: '请检查频道的 tvg-id 与节目单数据是否一致。',
+                  ),
+                for (final programme in programmes)
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Text(
+                      TimeOfDay.fromDateTime(
+                        programme.start.toLocal(),
+                      ).format(context),
+                    ),
+                    title: Text(programme.title),
+                    subtitle: programme.description.isEmpty
+                        ? null
+                        : Text(programme.description),
+                    trailing: identical(now, programme)
+                        ? const Chip(label: Text('正在播出'))
+                        : null,
+                  ),
+              ],
+            );
+          },
         ),
       ),
     );
@@ -161,6 +167,11 @@ class _LivePageState extends State<LivePage> {
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: c,
     builder: (context, _) {
+      if (_group != '全部' &&
+          _group != '收藏' &&
+          !c.liveChannels.any((channel) => channel.group == _group)) {
+        _group = '全部';
+      }
       final channels = _group == '收藏' ? c.store.liveFavorites : c.liveChannels;
       final groups = [
         '全部',
@@ -216,11 +227,25 @@ class _LivePageState extends State<LivePage> {
               ),
             ),
             if (_loading) const LinearProgressIndicator(minHeight: 2),
-            if (c.error != null)
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: ErrorNotice(error: c.error!, onRetry: _load),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      _loading
+                          ? '已发现 ${c.liveChannels.length} 个频道 · 来源 ${c.liveSourcesLoaded}/${c.liveSourceCount}'
+                          : '全部订阅 · ${c.liveChannels.length} 个频道',
+                    ),
+                  ),
+                  if (c.liveError != null)
+                    TextButton(
+                      onPressed: _showSources,
+                      child: const Text('来源状态'),
+                    ),
+                ],
               ),
+            ),
             Expanded(
               child: RefreshIndicator(
                 onRefresh: _load,

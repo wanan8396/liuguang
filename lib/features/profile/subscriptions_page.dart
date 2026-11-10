@@ -5,9 +5,6 @@ import 'package:share_plus/share_plus.dart';
 
 import '../../core/app_controller.dart';
 import '../../ui/components.dart';
-import '../discovery/line_discovery_page.dart';
-
-const defaultSubscription = 'http://z.qiqiv.cn/123.txt';
 
 class SubscriptionsPage extends StatefulWidget {
   const SubscriptionsPage({
@@ -22,9 +19,7 @@ class SubscriptionsPage extends StatefulWidget {
 }
 
 class _SubscriptionsPageState extends State<SubscriptionsPage> {
-  late final TextEditingController _url = TextEditingController(
-    text: widget.live ? '' : defaultSubscription,
-  );
+  final TextEditingController _url = TextEditingController();
   bool _working = false;
   AppController get c => widget.controller;
   @override
@@ -34,23 +29,108 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
   }
 
   Future<void> _add() async {
-    final uri = Uri.tryParse(_url.text.trim());
+    if (_working || c.importing || c.batchImporting) return;
+    final value = _url.text.trim();
+    final uri = Uri.tryParse(value);
     if (uri == null ||
-        !['http', 'https'].contains(uri.scheme) ||
-        uri.host.isEmpty) {
-      showMessage(context, '请输入有效的 HTTP / HTTPS 订阅地址');
+        !{'http', 'https'}.contains(uri.scheme) ||
+        uri.host.isEmpty ||
+        RegExp(r'\s').hasMatch(value)) {
+      showMessage(context, '请填写一个 HTTP / HTTPS 订阅地址');
       return;
     }
+    final urls = [uri.toString()];
     setState(() => _working = true);
     await runUi(context, () async {
+      var added = 0;
       if (widget.live) {
-        await c.addLiveSubscription(uri.toString());
+        added = await c.addLiveSubscriptions(urls);
       } else {
-        await c.importSubscription(uri.toString());
+        await c.importSubscriptions(urls, addOnly: true);
       }
-      if (mounted) showMessage(context, '订阅已处理，请查看节点状态');
+      if (mounted) {
+        final success =
+            widget.live ||
+            c.importQueue.isNotEmpty &&
+                c.importQueue.every(
+                  (item) => ['ready', 'existing'].contains(item.status),
+                );
+        if (success) {
+          _url.clear();
+        }
+        showMessage(
+          context,
+          widget.live
+              ? added > 0
+                    ? '已追加，可继续输入下一个订阅'
+                    : '此订阅已存在，已保留'
+              : success
+              ? c.importQueue.single.status == 'existing'
+                    ? '此订阅已存在，已保留'
+                    : '已追加，可继续输入下一个订阅'
+              : '追加未完成，请查看下方诊断',
+        );
+      }
     });
     if (mounted) setState(() => _working = false);
+  }
+
+  Future<void> _rename(String url) async {
+    final input = TextEditingController(text: c.subscriptionName(url));
+    final name = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        icon: const Icon(Icons.edit_note_rounded),
+        title: const Text('订阅名称'),
+        content: TextField(
+          controller: input,
+          autofocus: true,
+          maxLength: 40,
+          decoration: const InputDecoration(hintText: '给订阅起个好记的名字'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, input.text),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    input.dispose();
+    if (name != null && mounted) {
+      await runUi(context, () => c.renameSubscription(url, name));
+    }
+  }
+
+  Future<void> _delete(String url) async {
+    if (await confirm(
+          context,
+          '删除此订阅？',
+          '${c.subscriptionName(url)}\n收藏和观看历史保留。',
+        ) &&
+        mounted) {
+      await runUi(context, () => c.removeSubscription(url));
+    }
+  }
+
+  Future<void> _clearOld() async {
+    final urls = c.subscriptions
+        .map((s) => s.url)
+        .where((url) => url != defaultSubscription)
+        .toList();
+    if (urls.isEmpty) return;
+    if (await confirm(
+          context,
+          '清理 ${urls.length} 个旧订阅？',
+          '保留内置奇奇多仓，移除其他订阅。收藏和观看历史保留。',
+        ) &&
+        mounted) {
+      await runUi(context, () => c.removeSubscriptions(urls));
+    }
   }
 
   Future<void> _scan() async {
@@ -58,7 +138,9 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
       context,
       MaterialPageRoute(builder: (_) => const ScannerPage()),
     );
-    if (value != null && mounted) setState(() => _url.text = value);
+    if (value != null && mounted) {
+      _url.text = value.trim();
+    }
   }
 
   Future<void> _importFile() async => runUi(context, () async {
@@ -91,7 +173,11 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: c,
     builder: (context, _) {
-      final waiting = _working || c.importing;
+      final waiting = _working || c.importing || c.batchImporting;
+      final userSubscriptions = c.subscriptions
+          .where((s) => s.url != defaultSubscription)
+          .toList();
+      final pageError = widget.live ? c.liveError : c.importError;
       final liveUrls = jsonList(
         c.store.setting('liveSubscriptions'),
       ).map(str).toList();
@@ -104,20 +190,6 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
               onPressed: waiting ? null : _scan,
               icon: const Icon(Icons.qr_code_scanner),
             ),
-            if (!widget.live)
-              IconButton(
-                tooltip: '全网发现线路',
-                onPressed: waiting
-                    ? null
-                    : () => Navigator.push(
-                        context,
-                        MaterialPageRoute<void>(
-                          builder: (_) =>
-                              LineDiscoveryPage(controller: c),
-                        ),
-                      ),
-                icon: const Icon(Icons.travel_explore),
-              ),
             if (!widget.live)
               IconButton(
                 tooltip: '导入本地配置',
@@ -136,14 +208,12 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      widget.live ? '添加直播列表' : '添加视频订阅',
+                      widget.live ? '追加直播订阅' : '追加视频订阅',
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      widget.live
-                          ? '支持 M3U、TXT 和 JSON 多线路列表'
-                          : '支持多仓入口与单仓配置，自动展开并保留节点诊断',
+                      '每次添加一个地址，已有订阅保留',
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                     const SizedBox(height: 14),
@@ -151,8 +221,12 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
                       controller: _url,
                       enabled: !waiting,
                       keyboardType: TextInputType.url,
+                      textInputAction: TextInputAction.done,
+                      maxLines: 1,
+                      onSubmitted: waiting ? null : (_) => _add(),
+                      autocorrect: false,
                       decoration: const InputDecoration(
-                        hintText: 'http(s)://…',
+                        hintText: '输入一个订阅地址 https://…',
                         prefixIcon: Icon(Icons.link),
                       ),
                     ),
@@ -163,10 +237,10 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
                           child: FilledButton.icon(
                             onPressed: waiting ? null : _add,
                             icon: const Icon(Icons.add_link),
-                            label: Text(waiting ? '导入中…' : '添加订阅'),
+                            label: Text(waiting ? '追加中…' : '追加订阅'),
                           ),
                         ),
-                        if (c.importing)
+                        if (c.importing || c.batchImporting)
                           TextButton(
                             onPressed: c.cancelImport,
                             child: const Text('取消导入'),
@@ -182,20 +256,107 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
                 ),
               ),
             ),
-            if (c.error != null)
+            if (pageError != null)
               Padding(
                 padding: const EdgeInsets.only(top: 12),
-                child: ErrorNotice(error: c.error!),
+                child: ErrorNotice(error: pageError),
               ),
-            if (c.importNodes.isNotEmpty && !widget.live) ...[
+            if (!widget.live && c.importQueue.isNotEmpty) ...[
               const SizedBox(height: 16),
-              ExpansionTile(
-                title: Text('最近导入诊断 · ${c.importNodes.length} 个节点'),
-                children: [for (final node in c.importNodes) _node(node)],
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '导入结果 · ${c.importQueue.where((item) => !['queued', 'loading'].contains(item.status)).length}/${c.importQueue.length}',
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                      const SizedBox(height: 8),
+                      for (final item in c.importQueue)
+                        ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          leading: item.status == 'loading'
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : Icon(
+                                  ['ready', 'existing'].contains(item.status)
+                                      ? Icons.check_circle_rounded
+                                      : item.status == 'error' ||
+                                            item.status == 'partial'
+                                      ? Icons.error_outline_rounded
+                                      : Icons.schedule_rounded,
+                                  color: item.status == 'error'
+                                      ? Theme.of(context).colorScheme.error
+                                      : Theme.of(context).colorScheme.primary,
+                                ),
+                          title: Text(
+                            c.subscriptionName(item.url),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          subtitle: Text(
+                            item.error ??
+                                {
+                                  'queued': '等待导入',
+                                  'loading': '正在展开仓库…',
+                                  'ready': '${item.repositories} 个仓库 · 已保存',
+                                  'existing': '已存在 · 已保留',
+                                  'cancelled': '已取消',
+                                }[item.status] ??
+                                item.status,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
               ),
             ],
             const SizedBox(height: 20),
-            Text('已添加订阅', style: Theme.of(context).textTheme.titleMedium),
+            if (!widget.live &&
+                c.subscriptions.any((s) => s.url != defaultSubscription))
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  onPressed: waiting ? null : _clearOld,
+                  icon: const Icon(Icons.delete_sweep_outlined),
+                  label: const Text('清理旧订阅'),
+                ),
+              ),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '已添加订阅 · ${widget.live ? liveUrls.length : userSubscriptions.length}',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
+                if (!widget.live && userSubscriptions.isNotEmpty)
+                  TextButton.icon(
+                    onPressed: waiting
+                        ? null
+                        : () => runUi(
+                            context,
+                            () => c.importSubscriptions(
+                              userSubscriptions
+                                  .map((item) => item.url)
+                                  .where((url) => url.startsWith('http')),
+                            ),
+                          ),
+                    icon: const Icon(Icons.sync_rounded, size: 18),
+                    label: const Text('全部刷新'),
+                  ),
+              ],
+            ),
             const SizedBox(height: 10),
             if (widget.live) ...[
               if (liveUrls.isEmpty)
@@ -210,8 +371,13 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
                     child: ListTile(
                       leading: const Icon(Icons.live_tv_outlined),
                       title: Text(
-                        url,
+                        c.subscriptionName(url),
                         maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: Text(
+                        url,
+                        maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
                       trailing: IconButton(
@@ -235,18 +401,22 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
                   ),
                 ),
             ] else ...[
-              if (c.subscriptions.isEmpty)
-                const EmptyState(
-                  title: '订阅列表为空',
-                  message: '上方已预填入口地址，可修改后点击添加。不会自动请求或运行插件。',
-                ),
-              for (final subscription in c.subscriptions)
+              if (userSubscriptions.isEmpty)
+                const EmptyState(title: '订阅列表为空', message: '输入一个地址，追加自己的视频订阅。'),
+              for (final subscription in userSubscriptions)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 12),
                   child: Card(
                     child: ExpansionTile(
+                      leading: IconButton(
+                        tooltip: '删除${c.subscriptionName(subscription.url)}',
+                        onPressed: waiting
+                            ? null
+                            : () => _delete(subscription.url),
+                        icon: const Icon(Icons.delete_outline_rounded),
+                      ),
                       title: Text(
-                        subscription.url,
+                        c.subscriptionName(subscription.url),
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -271,31 +441,25 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
                                 label: const Text('更新'),
                               ),
                               IconButton(
+                                tooltip: '重命名订阅',
+                                onPressed: waiting
+                                    ? null
+                                    : () => _rename(subscription.url),
+                                icon: const Icon(Icons.edit_outlined),
+                              ),
+                              IconButton(
                                 tooltip: '分享订阅地址',
                                 onPressed: () => _share(subscription.url),
                                 icon: const Icon(Icons.ios_share),
                               ),
-                              const Spacer(),
-                              IconButton(
-                                tooltip: '移除订阅',
-                                onPressed: () async {
-                                  if (await confirm(
-                                        context,
-                                        '移除订阅？',
-                                        '收藏与历史会保留，但原内容源可能不再可用。',
-                                      ) &&
-                                      context.mounted) {
-                                    await runUi(
-                                      context,
-                                      () => c.removeSubscription(
-                                        subscription.url,
-                                      ),
-                                    );
-                                  }
-                                },
-                                icon: const Icon(Icons.delete_outline),
-                              ),
                             ],
+                          ),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                          child: SelectableText(
+                            subscription.url,
+                            style: Theme.of(context).textTheme.bodySmall,
                           ),
                         ),
                         for (final node in subscription.nodes) _node(node),
@@ -321,7 +485,7 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
           ? Theme.of(context).colorScheme.error
           : Theme.of(context).colorScheme.primary,
     ),
-    title: Text(node.name),
+    title: Text(node.config == null ? node.name : c.configName(node.config)),
     subtitle: SelectableText(
       '${node.status} · ${node.url}${node.error == null ? '' : '\n${node.error}'}',
     ),
@@ -329,7 +493,9 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
         ? null
         : () => runUi(context, () async {
             await c.selectConfig(node.config!);
-            if (mounted) showMessage(context, '已选择 ${node.config!.name}');
+            if (mounted) {
+              showMessage(context, '已选择 ${c.configName(node.config)}');
+            }
           }),
   );
 }

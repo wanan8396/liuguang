@@ -17,17 +17,6 @@ class _AppShellState extends State<AppShell> {
   int _index = 0;
   bool _liveVisited = false;
   @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (widget.controller.currentConfig != null &&
-          widget.controller.homePage == null) {
-        widget.controller.refreshHome();
-      }
-    });
-  }
-
-  @override
   Widget build(BuildContext context) => Scaffold(
     body: IndexedStack(
       index: _index,

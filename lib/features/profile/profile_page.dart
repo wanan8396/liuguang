@@ -8,6 +8,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../../core/app_controller.dart';
 import '../../ui/components.dart';
+import '../../ui/brand_icon.dart';
 import 'library_page.dart';
 import 'pairing_page.dart';
 import 'source_management_page.dart';
@@ -31,19 +32,7 @@ class ProfilePage extends StatelessWidget {
               padding: const EdgeInsets.all(22),
               child: Row(
                 children: [
-                  Container(
-                    width: 58,
-                    height: 58,
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.primaryContainer,
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Icon(
-                      Icons.play_arrow_rounded,
-                      size: 40,
-                      color: Theme.of(context).colorScheme.primary,
-                    ),
-                  ),
+                  const BrandIcon(),
                   const SizedBox(width: 18),
                   Expanded(
                     child: Column(
@@ -109,7 +98,7 @@ class ProfilePage extends StatelessWidget {
                   context,
                   Icons.rss_feed,
                   '视频订阅',
-                  '${controller.subscriptions.length} 个入口 · ${controller.configs.length} 个仓库',
+                  '添加自己的订阅 · 逐条追加与管理',
                   () =>
                       _push(context, SubscriptionsPage(controller: controller)),
                 ),
@@ -154,7 +143,7 @@ class ProfilePage extends StatelessWidget {
                   context,
                   Icons.settings_outlined,
                   '设置',
-                  '主题、缓存与插件信任',
+                  '主题、缓存与备份',
                   () => _push(context, SettingsPage(controller: controller)),
                 ),
                 const Divider(indent: 56, height: 1),
@@ -171,16 +160,16 @@ class ProfilePage extends StatelessWidget {
                         applicationName: '流光',
                         applicationVersion:
                             '${info.version} (${info.buildNumber})',
-                        applicationLegalese: '流光不内置视频内容。仅播放用户自行提供的合法订阅与媒体。',
-                        applicationIcon: Icon(
-                          Icons.play_circle_fill,
-                          size: 48,
-                          color: Theme.of(context).colorScheme.primary,
-                        ),
-                        children: [
-                          const Text(
-                            'Flutter · media_kit\n点击「查看许可」阅读本应用依赖的开源许可证。',
+                        applicationLegalese: '每一段光影，值得珍藏。',
+                        applicationIcon: const BrandIcon(size: 48),
+                        children: const [
+                          Text('流光，将影视、短剧与电视直播收进一个清爽的播放器。'),
+                          SizedBox(height: 12),
+                          Text(
+                            '内容自动更新，也支持添加自己的订阅。收藏喜欢的影片、接着上次观看，用适合自己的倍速享受每一段故事。',
                           ),
+                          SizedBox(height: 12),
+                          Text('内容由订阅提供方提供，流光不存储或上传影片。'),
                         ],
                       );
                     }
@@ -378,23 +367,6 @@ class _SettingsPageState extends State<SettingsPage> {
                       );
                     }
                   }),
-                ),
-                SwitchListTile(
-                  title: const Text('信任当前仓库插件'),
-                  subtitle: Text(c.currentConfig?.name ?? '尚未选择仓库'),
-                  value: c.pluginsTrusted,
-                  onChanged: c.currentConfig == null || _working
-                      ? null
-                      : (trusted) async {
-                          if (!trusted ||
-                              await confirm(
-                                context,
-                                '信任此仓库？',
-                                '只有可信的订阅才应获得执行 JAR / JS 插件的权限。',
-                              )) {
-                            await _task(() => c.trustPlugins(trusted));
-                          }
-                        },
                 ),
               ],
             ),

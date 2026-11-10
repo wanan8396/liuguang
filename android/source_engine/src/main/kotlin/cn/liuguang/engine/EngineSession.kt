@@ -35,10 +35,16 @@ open class EngineSession(val context: Context, val config: JSONObject, val site:
         val jar = site.optString("jar").ifBlank { raw.optString("spider") }
         require(jar.isNotBlank()) { "No site jar or global spider specified for $key" }
         loader = loadJar(jar)
+        NativeDexCompat.run(context) { initializeJar(api) }
+    }
+
+    private fun initializeJar(api: String) {
         try {
             val clz = loader!!.loadClass("com.github.catvod.spider.Init")
+            PluginUiCompat.prepare(clz, context)
             clz.getMethod("init", Context::class.java).invoke(null, context.applicationContext)
         } catch (_: ClassNotFoundException) {} catch (_: NoSuchMethodException) {}
+        PluginProxyCompat.prepare(loader!!)
         val name = if(api.startsWith("csp_")) "com.github.catvod.spider." + api.removePrefix("csp_") else api
         val loaded = loader!!.loadClass(name)
         require(Spider::class.java.isAssignableFrom(loaded)) { "$name does not implement the csp Spider ABI" }
@@ -51,6 +57,7 @@ open class EngineSession(val context: Context, val config: JSONObject, val site:
             override fun setCookie(url: String,cookie: String): Boolean { android.webkit.CookieManager.getInstance().setCookie(url,cookie); return true }
         }, EngineRules.digest((base+key).toByteArray()))
         value.init(context.applicationContext, ext())
+        JpjSourceCompat.prepare(value)
     }
     private fun ext(): String { val value = site.opt("ext"); return if(value==null || value==JSONObject.NULL) "" else value.toString() }
 
@@ -114,7 +121,7 @@ open class EngineSession(val context: Context, val config: JSONObject, val site:
         js?.let { return it.call(method,*args) }
         val s = spider ?: error("This session is for playback resolution only")
         val result = when(method) {
-            "home" -> { val home=JSONObject(s.homeContent(args[0] as Boolean)); if(!home.has("list")) { val video=s.homeVideoContent(); if(video.isNotBlank()) JSONObject(video).optJSONArray("list")?.let { home.put("list",it) } }; home.toString() }
+            "home" -> HomeResponse.merge(s.homeContent(args[0] as Boolean)) { s.homeVideoContent() }
             "category" -> s.categoryContent(args[0] as String,args[1].toString(),true,args[2] as HashMap<String,String>)
             "search" -> s.searchContent(args[0] as String,false,args[1].toString())
             "detail" -> s.detailContent(listOf(args[0] as String))

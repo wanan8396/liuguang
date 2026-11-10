@@ -24,6 +24,7 @@ class LiveRepository {
     List<dynamic> lives, {
     String? baseUrl,
     Future<String> Function(String url)? localFetcher,
+    void Function(String message)? onError,
   }) async {
     final output = <LiveChannel>[];
     await _entries(
@@ -36,6 +37,7 @@ class LiveRepository {
       localFetcher,
       {},
       0,
+      onError: onError,
     );
     return _merge(output);
   }
@@ -55,114 +57,128 @@ class LiveRepository {
     Set<String> visited,
     int depth, {
     bool channelEntries = false,
+    void Function(String message)? onError,
   }) async {
     if (depth > maxDepth) {
       throw LiveException('Playlist depth limit ($maxDepth) exceeded');
     }
     for (final value in entries) {
-      if (value is String) {
-        if (value.contains('\n') || value.startsWith('#EXTM3U')) {
-          out.addAll(
-            parse(
+      try {
+        if (value is String) {
+          if (value.contains('\n') || value.startsWith('#EXTM3U')) {
+            out.addAll(
+              parse(
+                value,
+                baseUrl: base,
+                group: group,
+                headers: headers,
+                epg: epg,
+              ),
+            );
+          } else {
+            await _playlist(
               value,
-              baseUrl: base,
-              group: group,
-              headers: headers,
-              epg: epg,
-            ),
+              out,
+              base,
+              group,
+              headers,
+              epg,
+              localFetcher,
+              visited,
+              depth,
+              onError: onError,
+            );
+          }
+          continue;
+        }
+        if (value is! Map) {
+          throw const LiveException(
+            'Live entry must be an object or playlist URL',
           );
-        } else {
-          await _playlist(
-            value,
+        }
+        final raw = jsonMap(value);
+        final name = str(raw['name']);
+        final nextHeaders = {
+          ...headers,
+          ..._headers(raw['header'] ?? raw['headers']),
+        };
+        if (str(raw['ua']).isNotEmpty) {
+          nextHeaders['User-Agent'] = str(raw['ua']);
+        }
+        final nextEpg = str(raw['epg']).isEmpty
+            ? epg
+            : _resolve(str(raw['epg']), base);
+        final channels = raw['channels'] ?? raw['groups'] ?? raw['lives'];
+        if (channels is List) {
+          await _entries(
+            channels,
             out,
             base,
-            group,
-            headers,
-            epg,
+            name.isEmpty ? group : name,
+            nextHeaders,
+            nextEpg,
             localFetcher,
             visited,
-            depth,
+            depth + 1,
+            channelEntries: raw['channels'] is List,
+            onError: onError,
           );
-        }
-        continue;
-      }
-      if (value is! Map) {
-        throw const LiveException(
-          'Live entry must be an object or playlist URL',
-        );
-      }
-      final raw = jsonMap(value);
-      final name = str(raw['name']);
-      final nextHeaders = {
-        ...headers,
-        ..._headers(raw['header'] ?? raw['headers']),
-      };
-      if (str(raw['ua']).isNotEmpty) nextHeaders['User-Agent'] = str(raw['ua']);
-      final nextEpg = str(raw['epg']).isEmpty
-          ? epg
-          : _resolve(str(raw['epg']), base);
-      final channels = raw['channels'] ?? raw['groups'] ?? raw['lives'];
-      if (channels is List) {
-        await _entries(
-          channels,
-          out,
-          base,
-          name.isEmpty ? group : name,
-          nextHeaders,
-          nextEpg,
-          localFetcher,
-          visited,
-          depth + 1,
-          channelEntries: raw['channels'] is List,
-        );
-      } else if (channelEntries && str(raw['url']).isNotEmpty) {
-        final source = _source(str(raw['url']), base);
-        out.add(
-          LiveChannel(
-            name: name.isEmpty ? '未命名频道' : name,
-            urls: [source.$1],
-            group: str(raw['group']).isEmpty ? group : str(raw['group']),
-            logo: _resolve(str(raw['logo'] ?? raw['tvg-logo']), base),
-            tvgId: str(raw['tvgId'] ?? raw['tvg-id']),
-            epg: nextEpg,
-            headers: {...nextHeaders, ...source.$2},
-          ),
-        );
-      } else if (raw['urls'] is List) {
-        final urls = <String>[];
-        final channelHeaders = Map.of(nextHeaders);
-        for (final item in raw['urls'] as List) {
-          final source = _source(str(item), base);
-          urls.add(source.$1);
-          channelHeaders.addAll(source.$2);
-        }
-        if (urls.isNotEmpty) {
+        } else if (channelEntries && str(raw['url']).isNotEmpty) {
+          final source = _source(str(raw['url']), base);
           out.add(
             LiveChannel(
               name: name.isEmpty ? '未命名频道' : name,
-              urls: urls,
+              urls: [source.$1],
               group: str(raw['group']).isEmpty ? group : str(raw['group']),
               logo: _resolve(str(raw['logo'] ?? raw['tvg-logo']), base),
               tvgId: str(raw['tvgId'] ?? raw['tvg-id']),
               epg: nextEpg,
-              headers: channelHeaders,
+              headers: {...nextHeaders, ...source.$2},
             ),
           );
+        } else if (raw['urls'] is List) {
+          final urls = <String>[];
+          final channelHeaders = Map.of(nextHeaders);
+          for (final item in raw['urls'] as List) {
+            final source = _source(str(item), base);
+            urls.add(source.$1);
+            channelHeaders.addAll(source.$2);
+          }
+          if (urls.isNotEmpty) {
+            out.add(
+              LiveChannel(
+                name: name.isEmpty ? '未命名频道' : name,
+                urls: urls,
+                group: str(raw['group']).isEmpty ? group : str(raw['group']),
+                logo: _resolve(str(raw['logo'] ?? raw['tvg-logo']), base),
+                tvgId: str(raw['tvgId'] ?? raw['tvg-id']),
+                epg: nextEpg,
+                headers: channelHeaders,
+              ),
+            );
+          }
+        } else if (str(raw['url']).isNotEmpty) {
+          await _playlist(
+            str(raw['url']),
+            out,
+            base,
+            name.isEmpty ? group : name,
+            nextHeaders,
+            nextEpg,
+            localFetcher,
+            visited,
+            depth + 1,
+            onError: onError,
+          );
+        } else {
+          throw LiveException('Live entry "$name" has no channels or URL');
         }
-      } else if (str(raw['url']).isNotEmpty) {
-        await _playlist(
-          str(raw['url']),
-          out,
-          base,
-          name.isEmpty ? group : name,
-          nextHeaders,
-          nextEpg,
-          localFetcher,
-          visited,
-          depth + 1,
-        );
-      } else {
-        throw LiveException('Live entry "$name" has no channels or URL');
+      } catch (failure) {
+        if (onError == null) rethrow;
+        final name = value is Map
+            ? str(value['name'] ?? value['url'])
+            : str(value);
+        onError('$name: $failure');
       }
     }
   }
@@ -176,8 +192,9 @@ class LiveRepository {
     String epg,
     Future<String> Function(String)? localFetcher,
     Set<String> visited,
-    int depth,
-  ) async {
+    int depth, {
+    void Function(String message)? onError,
+  }) async {
     if (depth > maxDepth) {
       throw LiveException('Playlist depth limit ($maxDepth) exceeded');
     }
@@ -234,6 +251,7 @@ class LiveRepository {
           visited,
           depth + 1,
           channelEntries: decoded is List || decoded['channels'] is List,
+          onError: onError,
         );
       } else {
         out.addAll(

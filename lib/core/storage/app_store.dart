@@ -167,19 +167,31 @@ class AppStore {
     }
     data['subscriptions'] = list.map((v) => v.toJson()).toList();
   });
-  Future<void> removeSubscription(String url) => _update((data) {
+  Future<void> removeSubscription(String url) => removeSubscriptions([url]);
+  Future<void> removeSubscriptions(Iterable<String> urls) => _update((data) {
+    final removed = urls.toSet();
     jsonList(
       data['subscriptions'],
-    ).removeWhere((v) => jsonMap(v)['url'] == url);
+    ).removeWhere((v) => removed.contains(jsonMap(v)['url']));
+    final settings = jsonMap(data['settings']);
+    for (final url in removed) {
+      settings.remove('subscriptionName:$url');
+    }
+    data['settings'] = settings;
   });
 
   Object? setting(String key) => jsonMap(_data['settings'])[key];
-  Future<void> setSetting(String key, Object? value) => _update((data) {
+  Future<void> setSetting(String key, Object? value) =>
+      setSettings({key: value});
+
+  Future<void> setSettings(Map<String, Object?> values) => _update((data) {
     final settings = jsonMap(data['settings']);
-    if (value == null) {
-      settings.remove(key);
-    } else {
-      settings[key] = value;
+    for (final entry in values.entries) {
+      if (entry.value == null) {
+        settings.remove(entry.key);
+      } else {
+        settings[entry.key] = entry.value;
+      }
     }
     data['settings'] = settings;
   });

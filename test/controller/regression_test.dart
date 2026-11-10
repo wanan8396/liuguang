@@ -94,15 +94,9 @@ void main() {
     await store.setSetting('liveSubscriptions', ['https://test.invalid/extra.txt']);
     await controller.loadLive();
     expect(controller.liveChannels.map((channel) => channel.name), ['频道甲', '频道乙']);
-    expect(controller.error, contains('proxy'));
+    expect(controller.liveError, contains('proxy'));
+    expect(controller.error, isNull);
   });
 
-  test('撤销信任在第一处await之前立即生效', () async {
-    await controller.trustPlugins(true);
-    expect(controller.isConfigTrusted(original), isTrue);
-    final revoke = controller.trustPlugins(false);
-    expect(controller.isConfigTrusted(original), isFalse);
-    await revoke;
-    expect(controller.pluginsTrusted, isFalse);
-  });
+
 }

@@ -5,6 +5,10 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 
 import 'config/subscription_repository.dart';
+import 'config/subscription_batch.dart';
+import 'config/builtin_subscription.dart';
+export 'config/subscription_batch.dart';
+export 'config/builtin_subscription.dart';
 import 'engine/source_engine.dart';
 import 'live/live_repository.dart';
 import 'models/models.dart';
@@ -19,7 +23,6 @@ class AppController extends ChangeNotifier {
     : store = store ?? AppStore(),
       http = http ?? AppHttpClient() {
     this.engine = engine ?? SourceEngine(this.http);
-    this.engine.isTrusted = isConfigTrusted;
     this.engine.loadCredentials = _loadCredentials;
     _subscriptions = SubscriptionRepository(this.http);
     _live = LiveRepository(this.http);
@@ -35,19 +38,32 @@ class AppController extends ChangeNotifier {
   TvConfig? currentConfig;
   Site? currentSite;
   VodPage? homePage;
+  String? homeCategory;
   VodPage? currentPage;
   bool busy = false;
   bool importing = false;
+  bool batchImporting = false;
+  bool loadingBuiltIn = false;
+  Timer? _builtInUpdateTimer;
+  int _builtInGeneration = 0;
+  String? builtInError;
+  List<SubscriptionImportItem> importQueue = [];
+  int _batchGeneration = 0;
   String? error;
+  String? sourceNotice;
+  String? liveError;
+  String? importError;
   List<RepoNode> importNodes = [];
   List<LiveChannel> liveChannels = [];
+  final _liveLists = <String, List<LiveChannel>>{};
+  int liveSourcesLoaded = 0, liveSourceCount = 0;
   ThemeMode themeMode = ThemeMode.system;
   int _generation = 0;
   int _searchGeneration = 0;
   int _liveGeneration = 0;
   int _importGeneration = 0;
+  int _selectionGeneration = 0;
   bool _disposed = false;
-  final Set<String> _revokedTrust = {};
 
   List<ImportResult> get subscriptions => store.subscriptions;
   List<TvConfig> get configs {
@@ -85,6 +101,33 @@ class AppController extends ChangeNotifier {
         !jsonList(
           store.setting('disabled:${selected.url}'),
         ).map(str).contains(site.key);
+  }
+
+  /// This published short-drama endpoint redirects to an unavailable server.
+  /// Keep the original subscription intact and bind all data to a real sibling
+  /// source, so details, playback and history never reuse another source's IDs.
+  Site? shortDramaFallback(TvConfig config, Site site) {
+    final uri = Uri.tryParse(site.api);
+    if (site.type != 4 ||
+        uri?.host != '38.76.197.172' ||
+        uri?.port != 15151 ||
+        uri?.path != '/duanju.php' ||
+        uri?.queryParameters['type'] != 'dquark') {
+      return null;
+    }
+    final available = enabledSites(config);
+    for (final api in [
+      'csp_HBmengyaCAT',
+      'csp_HBhaokanCAT',
+      'csp_HBQimaoCAT',
+      'csp_HBWeiguanCAT',
+    ]) {
+      final fallback = available
+          .where((s) => s.type == 3 && s.api == api)
+          .firstOrNull;
+      if (fallback != null) return fallback;
+    }
+    return null;
   }
 
   Future<void> setSiteEnabled(
@@ -169,15 +212,6 @@ class AppController extends ChangeNotifier {
     _notify();
   }
 
-  String _trustId(TvConfig config) =>
-      sha256.convert(utf8.encode(jsonEncode(config.toJson()))).toString();
-
-  bool isConfigTrusted(TvConfig config) =>
-      !_revokedTrust.contains(_trustId(config)) &&
-      jsonList(store.setting('trustedConfigs')).contains(_trustId(config));
-  bool get pluginsTrusted =>
-      currentConfig != null && isConfigTrusted(currentConfig!);
-
   Future<void> initialize() async {
     await store.init();
     final theme = str(store.setting('themeMode'));
@@ -199,6 +233,77 @@ class AppController extends ChangeNotifier {
     _notify();
   }
 
+  Future<void> startHome() async {
+    _builtInUpdateTimer ??= Timer.periodic(const Duration(hours: 6), (_) {
+      if (!_disposed) unawaited(loadBuiltInSubscription());
+    });
+    if (store.setting('builtInSetupComplete') != true) {
+      await loadBuiltInSubscription();
+    } else {
+      unawaited(loadBuiltInSubscription());
+      if (currentConfig != null && homePage == null) await refreshHome();
+    }
+  }
+
+  Future<void> loadBuiltInSubscription() async {
+    if (loadingBuiltIn || _disposed) return;
+    final previous = subscriptions
+        .where((s) => s.url == defaultSubscription)
+        .firstOrNull;
+    if (previous == null && store.setting('builtInSetupComplete') == true) {
+      return;
+    }
+    final updated = DateTime.tryParse(str(store.setting('builtInUpdatedAt')));
+    if (previous != null &&
+        updated != null &&
+        DateTime.now().difference(updated) < const Duration(hours: 6)) {
+      return;
+    }
+    final generation = ++_builtInGeneration;
+    loadingBuiltIn = true;
+    builtInError = null;
+    _notify();
+    TvConfig? chosen;
+    try {
+      // Independent importer: background refresh cannot cancel a manual append
+      // or expose its nodes/errors in the subscription UI.
+      final result = await SubscriptionRepository(
+        http,
+      ).load(defaultSubscription);
+      if (_disposed || generation != _builtInGeneration) return;
+      if (result.configs.isEmpty) {
+        builtInError = '内容暂时无法更新';
+      } else {
+        final nodes = [...result.nodes];
+        if (previous != null && nodes.any((n) => n.status == 'error')) {
+          for (final old in previous.nodes.where((n) => n.config != null)) {
+            if (nodes.any((n) => n.url == old.url && n.config != null)) {
+              continue;
+            }
+            nodes.removeWhere((n) => n.url == old.url);
+            nodes.add(old);
+          }
+        }
+        await store.saveSubscription(
+          ImportResult(url: defaultSubscription, nodes: nodes),
+        );
+        await store.setSettings({
+          'subscriptionName:$defaultSubscription': defaultSubscriptionName,
+          'builtInSetupComplete': true,
+          'builtInUpdatedAt': DateTime.now().toIso8601String(),
+        });
+        // Existing playback keeps its session/config until the next selection.
+        if (currentConfig == null) chosen = result.configs.first;
+      }
+    } catch (failure) {
+      if (!_disposed) builtInError = '内容暂时无法更新';
+    } finally {
+      loadingBuiltIn = false;
+      _notify();
+    }
+    if (!_disposed && chosen != null) await selectConfig(chosen);
+  }
+
   Future<void> reloadAfterRestore() async {
     _generation++;
     _searchGeneration++;
@@ -210,6 +315,7 @@ class AppController extends ChangeNotifier {
     homePage = null;
     currentPage = null;
     liveChannels = [];
+    liveError = null;
     error = null;
     busy = false;
     await initialize();
@@ -217,10 +323,131 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> importSubscription(String url) async {
-    if (importing) return;
+    if (importing || batchImporting) return;
+    importQueue = [];
+    await _importSubscription(url);
+  }
+
+  Future<void> importSubscriptions(
+    Iterable<String> addresses, {
+    bool addOnly = false,
+  }) async {
+    if (importing || batchImporting) return;
+    final urls = subscriptionUrls(addresses.join('\n'));
+    final generation = ++_batchGeneration;
+    batchImporting = true;
+    importQueue = [for (final url in urls) SubscriptionImportItem(url)];
+    _notify();
+    try {
+      for (var i = 0; i < urls.length; i++) {
+        if (_disposed || generation != _batchGeneration) break;
+        final existing = subscriptions
+            .where((item) => item.url == urls[i])
+            .firstOrNull;
+        if (addOnly && existing != null && existing.configs.isNotEmpty) {
+          importQueue[i] = SubscriptionImportItem(
+            urls[i],
+            status: 'existing',
+            repositories: existing.configs.length,
+          );
+          _notify();
+          continue;
+        }
+        importQueue[i] = SubscriptionImportItem(urls[i], status: 'loading');
+        _notify();
+        try {
+          final result = await _importSubscription(urls[i]);
+          if (_disposed || generation != _batchGeneration) break;
+          final failed =
+              result?.nodes.where((n) => n.error != null).length ?? 0;
+          final count = result?.configs.length ?? 0;
+          final diagnostics =
+              result?.nodes
+                  .where((node) => node.error != null)
+                  .map((node) => node.error!)
+                  .take(3)
+                  .join('\n') ??
+              '';
+          importQueue[i] = SubscriptionImportItem(
+            urls[i],
+            status: count == 0
+                ? 'error'
+                : failed > 0
+                ? 'partial'
+                : 'ready',
+            repositories: count,
+            error: count == 0
+                ? diagnostics.isNotEmpty
+                      ? diagnostics
+                      : importError ?? '没有可用仓库，请查看导入诊断'
+                : failed > 0
+                ? '$failed 个节点加载失败'
+                : null,
+          );
+        } catch (failure) {
+          if (_disposed || generation != _batchGeneration) break;
+          importQueue[i] = SubscriptionImportItem(
+            urls[i],
+            status: 'error',
+            error: failure.toString(),
+          );
+        }
+        _notify();
+      }
+    } finally {
+      importQueue = [
+        for (final item in importQueue)
+          if (item.status == 'queued' || item.status == 'loading')
+            SubscriptionImportItem(item.url, status: 'cancelled')
+          else
+            item,
+      ];
+      batchImporting = false;
+      _notify();
+    }
+  }
+
+  String subscriptionName(String url) {
+    final name = str(store.setting('subscriptionName:$url')).trim();
+    final host = Uri.tryParse(url)?.host ?? '';
+    return name.isNotEmpty
+        ? name
+        : host.isNotEmpty
+        ? host
+        : '本地订阅';
+  }
+
+  String configName(TvConfig? config) {
+    if (config == null) return '未命名仓库';
+    for (final value in [
+      store.setting('subscriptionName:${config.url}'),
+      config.name,
+      config.raw['name'],
+    ]) {
+      final name = str(value).trim();
+      if (name.isNotEmpty &&
+          !RegExp(r'^https?://', caseSensitive: false).hasMatch(name)) {
+        return name;
+      }
+    }
+    return subscriptionName(config.url);
+  }
+
+  Future<void> renameSubscription(String url, String name) async {
+    await store.setSetting(
+      'subscriptionName:$url',
+      name.trim().isEmpty ? null : name.trim(),
+    );
+    _notify();
+  }
+
+  Future<ImportResult?> _importSubscription(
+    String url, {
+    bool activate = true,
+  }) async {
     final generation = ++_importGeneration;
     importing = true;
-    error = null;
+    importError = null;
     importNodes = [];
     _notify();
     try {
@@ -232,11 +459,13 @@ class AppController extends ChangeNotifier {
           _notify();
         },
       );
-      if (_disposed || generation != _importGeneration) return;
-      await _acceptImport(result);
+      if (_disposed || generation != _importGeneration) return null;
+      importNodes = result.nodes;
+      await _acceptImport(result, activate: activate);
+      return result;
     } catch (failure) {
-      if (_disposed || generation != _importGeneration) return;
-      error = failure.toString();
+      if (_disposed || generation != _importGeneration) return null;
+      importError = failure.toString();
       rethrow;
     } finally {
       importing = false;
@@ -245,19 +474,25 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> importText(String text, {String name = '本地配置'}) async {
-    if (importing) return;
+    if (importing || batchImporting) return;
     final generation = ++_importGeneration;
     importing = true;
-    error = null;
+    importError = null;
+    importNodes = [];
     _notify();
     try {
-      final result = await _subscriptions.loadText(text, name: name);
+      final identity = sha256.convert(utf8.encode(text.trim())).toString();
+      final result = await _subscriptions.loadText(
+        text,
+        name: name,
+        baseUrl: 'https://local.invalid/imports/$identity/',
+      );
       if (_disposed || generation != _importGeneration) return;
       importNodes = result.nodes;
       await _acceptImport(result);
     } catch (failure) {
       if (_disposed || generation != _importGeneration) return;
-      error = failure.toString();
+      importError = failure.toString();
       rethrow;
     } finally {
       importing = false;
@@ -265,8 +500,15 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  Future<void> _acceptImport(ImportResult result) async {
+  Future<void> _acceptImport(
+    ImportResult result, {
+    bool activate = true,
+  }) async {
     await store.saveSubscription(result);
+    if (result.configs.isEmpty) {
+      importError = '没有可加载的单仓配置，请查看入口诊断';
+    }
+    if (!activate) return;
     final chosen =
         configs
             .where((config) => config.url == currentConfig?.url)
@@ -274,29 +516,56 @@ class AppController extends ChangeNotifier {
         result.configs.firstOrNull ??
         configs.firstOrNull;
     if (chosen != null) {
-      await selectConfig(chosen);
+      // Adding another subscription should preserve the current source and not
+      // re-run its plugin initialization/login dialogs if its config is unchanged.
+      if (!result.configs.any((config) => config.url == currentConfig?.url) &&
+          currentConfig?.url == chosen.url &&
+          jsonEncode(currentConfig?.toJson()) == jsonEncode(chosen.toJson()) &&
+          currentSite != null) {
+        currentConfig = chosen;
+        _notify();
+      } else {
+        await selectConfig(chosen);
+      }
     } else {
-      error = '没有可加载的单仓配置，请查看入口诊断';
+      importError = '没有可加载的单仓配置，请查看入口诊断';
     }
   }
 
   void cancelImport() {
+    _batchGeneration++;
     _importGeneration++;
     _subscriptions.cancel();
   }
 
   Future<void> removeSubscription(String url) async {
-    await store.removeSubscription(url);
+    await removeSubscriptions([url]);
+  }
+
+  Future<void> removeSubscriptions(Iterable<String> urls) async {
+    final removed = urls.toSet();
+    if (removed.isEmpty) return;
+    await store.removeSubscriptions(removed);
+    if (removed.contains(defaultSubscription)) {
+      _builtInGeneration++;
+      await store.setSetting('builtInSetupComplete', true);
+    }
+    _selectionGeneration++;
     final remaining = configs
         .where((config) => config.url == currentConfig?.url)
         .firstOrNull;
     if (remaining == null) {
       _generation++;
+      _liveGeneration++;
       currentConfig = null;
       currentSite = null;
       homePage = null;
+      homeCategory = null;
       currentPage = null;
       liveChannels = [];
+      liveError = null;
+      error = null;
+      busy = false;
       await engine.closeSessions();
       if (configs.isNotEmpty) await selectConfig(configs.first);
     }
@@ -304,34 +573,62 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> selectConfig(TvConfig config) async {
-    currentConfig = config;
     final siteKey = str(store.setting('site:${config.url}'));
     final site =
         enabledSites(config).where((site) => site.key == siteKey).firstOrNull ??
         enabledSites(config).firstOrNull;
-    liveChannels = [];
-    _liveGeneration++;
-    await store.setSetting('currentConfig', config.url);
     if (site != null) {
-      await selectSite(site);
+      await selectSource(config, site);
     } else {
+      _selectionGeneration++;
       _generation++;
+      currentConfig = config;
       currentSite = null;
       homePage = null;
       currentPage = null;
+      busy = false;
       error = '此仓库没有可选择的站点';
       _notify();
+      await store.setSettings({'currentConfig': config.url, 'currentSite': ''});
     }
   }
 
   Future<void> selectSite(Site site) async {
-    currentSite = site;
-    homePage = null;
-    currentPage = null;
-    await store.setSetting('currentSite', site.key);
-    if (currentConfig != null) {
-      await store.setSetting('site:${currentConfig!.url}', site.key);
+    final config = currentConfig;
+    if (config == null) throw const SourceFailure('no-source', '请先选择仓库');
+    await selectSource(config, site);
+  }
+
+  /// Bind the repository and its site before any storage or network await.
+  /// A superseded selection must never resume against a newer repository.
+  Future<void> selectSource(TvConfig config, Site site) async {
+    final requested = enabledSites(
+      config,
+    ).where((candidate) => candidate.key == site.key).firstOrNull;
+    if (requested == null) {
+      throw const SourceFailure('site-mismatch', '此内容源不属于所选仓库或已停用');
     }
+    final fallback = shortDramaFallback(config, requested);
+    final selected = fallback ?? requested;
+    final selection = ++_selectionGeneration;
+    _generation++;
+    currentConfig = config;
+    currentSite = selected;
+    homePage = null;
+    homeCategory = null;
+    currentPage = null;
+    busy = true;
+    error = null;
+    sourceNotice = fallback == null
+        ? null
+        : '全网短剧服务暂不可用，已切换同仓备用：${fallback.name}';
+    _notify();
+    await store.setSettings({
+      'currentConfig': config.url,
+      'currentSite': selected.key,
+      'site:${config.url}': selected.key,
+    });
+    if (selection != _selectionGeneration || _disposed) return;
     await refreshHome();
   }
 
@@ -339,15 +636,41 @@ class AppController extends ChangeNotifier {
     final config = currentConfig;
     final site = currentSite;
     if (config == null || site == null) return;
+    if (shortDramaFallback(config, site) != null) {
+      await selectSource(config, site);
+      return;
+    }
     final generation = ++_generation;
     busy = true;
     error = null;
+    homeCategory = null;
     _notify();
     try {
       final page = await engine.home(config, site);
       if (generation != _generation || _disposed) return;
       homePage = page;
       currentPage = page;
+      if (page.items.isEmpty && page.categories.isNotEmpty) {
+        Object? categoryError;
+        var loaded = false;
+        // Many TVBox sites only implement categoryContent. Their empty home
+        // recommendation is not evidence that the repository has no videos.
+        _notify();
+        for (final category in page.categories.take(3)) {
+          try {
+            final videos = await engine.category(config, site, category.id);
+            if (generation != _generation || _disposed) return;
+            loaded = true;
+            currentPage = videos;
+            homeCategory = category.id;
+            if (videos.items.isNotEmpty) break;
+          } catch (failure) {
+            if (generation != _generation || _disposed) return;
+            categoryError = failure;
+          }
+        }
+        if (!loaded && categoryError != null) error = categoryError.toString();
+      }
     } catch (failure) {
       if (generation == _generation) error = failure.toString();
     } finally {
@@ -397,27 +720,6 @@ class AppController extends ChangeNotifier {
         _notify();
       }
     }
-  }
-
-  Future<void> trustPlugins(bool trusted) async {
-    final config = currentConfig;
-    if (config == null) return;
-    final id = _trustId(config);
-    final ids = jsonList(store.setting('trustedConfigs')).map(str).toSet();
-    if (trusted) {
-      ids.add(id);
-      await store.setSetting('trustedConfigs', ids.toList());
-      _revokedTrust.remove(id);
-    } else {
-      _revokedTrust.add(id);
-      ids.remove(id);
-      try {
-        await store.setSetting('trustedConfigs', ids.toList());
-      } finally {
-        await engine.closeSessions();
-      }
-    }
-    await refreshHome();
   }
 
   Future<void> setThemeMode(ThemeMode mode) async {
@@ -479,55 +781,187 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> loadLive() async {
-    final config = currentConfig;
-    final site = currentSite;
     final generation = ++_liveGeneration;
-    error = null;
-    _notify();
-    try {
-      final channels = <LiveChannel>[];
-      final failures = <String>[];
-      if (config != null) {
-        for (final entry in config.lives) {
-          if (generation != _liveGeneration || _disposed) return;
-          try {
-            channels.addAll(await _live.load(
-              [entry],
-              baseUrl: config.url,
-              localFetcher: site == null
-                  ? null
-                  : (url) => engine.fetchLocal(config, site, url),
-            ));
-          } catch (failure) {
-            final name = entry is Map ? str(entry['name'] ?? entry['url']) : str(entry);
-            failures.add('$name: $failure');
-          }
-        }
-      }
-      for (final url in jsonList(store.setting('liveSubscriptions')).map(str)) {
-        try {
-          channels.addAll(await _live.loadUrl(url));
-        } catch (failure) {
-          failures.add('$url: $failure');
-        }
-      }
-      if (generation != _liveGeneration || _disposed) return;
-      liveChannels = channels;
-      if (failures.isNotEmpty) error = failures.join('\n');
-    } catch (failure) {
-      if (generation == _liveGeneration) error = failure.toString();
+    liveError = null;
+    liveSourcesLoaded = 0;
+    final repositories = {for (final config in configs) config.url: config};
+    if (currentConfig != null) {
+      repositories[currentConfig!.url] = currentConfig!;
     }
+    final jobs =
+        <
+          ({
+            String key,
+            TvConfig? config,
+            Site? site,
+            dynamic entry,
+            String label,
+          })
+        >[];
+    for (final config in repositories.values) {
+      final sites = enabledSites(config);
+      final site =
+          config.url == currentConfig?.url && currentSite?.runtime == 'jar'
+          ? currentSite
+          : sites
+                    .where(
+                      (s) =>
+                          s.key == str(store.setting('site:${config.url}')) &&
+                          s.runtime == 'jar',
+                    )
+                    .firstOrNull ??
+                sites.where((s) => s.runtime == 'jar').firstOrNull;
+      for (final entry in config.lives) {
+        if (entry is Map && entry.isEmpty) continue;
+        final name = entry is Map
+            ? str(entry['name'] ?? entry['url'])
+            : str(entry);
+        jobs.add((
+          key: jsonEncode([config.url, entry]),
+          config: config,
+          site: site,
+          entry: entry,
+          label: '${configName(config)} · $name',
+        ));
+      }
+    }
+    for (final url in jsonList(
+      store.setting('liveSubscriptions'),
+    ).map(str).toSet()) {
+      jobs.add((
+        key: 'subscription:$url',
+        config: null,
+        site: null,
+        entry: {'url': url},
+        label: '直播订阅',
+      ));
+    }
+    liveSourceCount = jobs.length;
+    final activeKeys = jobs.map((job) => job.key).toSet();
+    _liveLists.removeWhere((key, _) => !activeKeys.contains(key));
+    final results = <String, List<LiveChannel>>{};
+    final failures = <String>[];
+    void publish() {
+      if (generation != _liveGeneration || _disposed) return;
+      final unique = <String, LiveChannel>{};
+      for (final job in jobs) {
+        for (final channel
+            in results[job.key] ?? _liveLists[job.key] ?? <LiveChannel>[]) {
+          final key = jsonEncode([
+            channel.name,
+            channel.group,
+            channel.urls,
+            channel.headers,
+            channel.urls.any(
+                  (url) => [
+                    '127.0.0.1',
+                    'localhost',
+                    '::1',
+                  ].contains(Uri.tryParse(url)?.host),
+                )
+                ? channel.configUrl
+                : '',
+          ]);
+          unique.putIfAbsent(key, () => channel);
+        }
+      }
+      liveChannels = unique.values.toList();
+      liveError = failures.isEmpty ? null : failures.join('\n');
+      _notify();
+    }
+
+    publish();
     _notify();
+    var next = 0;
+    Future<void> worker() async {
+      while (next < jobs.length) {
+        if (generation != _liveGeneration || _disposed) return;
+        final job = jobs[next++];
+        final issues = <String>[];
+        try {
+          final raw = job.entry is Map
+              ? jsonMap(job.entry)
+              : <String, dynamic>{};
+          final url = str(raw['url']);
+          if (Uri.decodeFull(url).contains('切换成你自己的地址')) {
+            throw const LiveException('此来源只提供了占位地址，未配置频道列表');
+          }
+          final loaded = await _live
+              .load(
+                [job.entry],
+                baseUrl: job.config?.url,
+                localFetcher: job.config == null || job.site == null
+                    ? null
+                    : (url) => engine.fetchLocal(job.config!, job.site!, url),
+                onError: issues.add,
+              )
+              .timeout(const Duration(seconds: 35));
+          if (generation != _liveGeneration || _disposed) return;
+          final channels = loaded
+              .map(
+                (channel) => LiveChannel(
+                  name: channel.name,
+                  urls: channel.urls,
+                  group: channel.group,
+                  logo: channel.logo,
+                  tvgId: channel.tvgId,
+                  epg: channel.epg,
+                  headers: channel.headers,
+                  configUrl: job.config?.url ?? '',
+                  siteKey: job.site?.key ?? '',
+                  sourceName: job.label,
+                ),
+              )
+              .toList();
+          if (channels.isNotEmpty || issues.isEmpty) {
+            results[job.key] = channels;
+            _liveLists[job.key] = channels;
+          }
+          failures.addAll(issues.map((issue) => '${job.label}: $issue'));
+        } catch (failure) {
+          if (generation != _liveGeneration || _disposed) return;
+          failures.add('${job.label}: $failure');
+        }
+        liveSourcesLoaded++;
+        publish();
+      }
+    }
+
+    await Future.wait(List.generate(jobs.length.clamp(0, 4), (_) => worker()));
   }
 
-  Future<Playback> playLive(LiveChannel channel, {int index = 0}) =>
-      engine.playLive(currentConfig, currentSite, channel, index: index);
+  Future<Playback> playLive(LiveChannel channel, {int index = 0}) {
+    final config = channel.configUrl.isEmpty
+        ? currentConfig
+        : configs
+              .where((config) => config.url == channel.configUrl)
+              .firstOrNull;
+    final site = channel.siteKey.isEmpty
+        ? null
+        : config?.sites
+              .where((site) => site.key == channel.siteKey)
+              .firstOrNull;
+    return engine.playLive(
+      config,
+      site ?? (channel.configUrl.isEmpty ? currentSite : null),
+      channel,
+      index: index,
+    );
+  }
 
-  Future<void> addLiveSubscription(String url) async {
-    final urls = jsonList(store.setting('liveSubscriptions')).map(str).toSet()
-      ..add(url.trim());
-    await store.setSetting('liveSubscriptions', urls.toList());
-    await loadLive();
+  Future<void> addLiveSubscription(String url) =>
+      addLiveSubscriptions([url]).then((_) {});
+
+  Future<int> addLiveSubscriptions(Iterable<String> addresses) async {
+    final urls = jsonList(store.setting('liveSubscriptions')).map(str).toSet();
+    final before = urls.length;
+    urls.addAll(subscriptionUrls(addresses.join('\n')));
+    final added = urls.length - before;
+    if (added > 0) {
+      await store.setSetting('liveSubscriptions', urls.toList());
+      await loadLive();
+    }
+    return added;
   }
 
   Future<void> toggleFavorite(Vod vod, {Site? site, TvConfig? config}) async {
@@ -592,6 +1026,7 @@ class AppController extends ChangeNotifier {
   Future<void>? _cleanup;
 
   Future<void> disposeAsync() {
+    _builtInUpdateTimer?.cancel();
     dispose();
     return _cleanup!;
   }
@@ -607,6 +1042,8 @@ class AppController extends ChangeNotifier {
   @override
   void dispose() {
     if (_disposed) return;
+    _builtInUpdateTimer?.cancel();
+    _builtInGeneration++;
     _disposed = true;
     _generation++;
     _searchGeneration++;

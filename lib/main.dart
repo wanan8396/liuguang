@@ -17,6 +17,7 @@ Future<void> main() async {
         child: const LiuguangApp(),
       ),
     );
+    WidgetsBinding.instance.addPostFrameCallback((_) => controller.startHome());
   } catch (error) {
     runApp(
       MaterialApp(

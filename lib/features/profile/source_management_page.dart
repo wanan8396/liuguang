@@ -44,6 +44,8 @@ class _SourceManagementPageState extends State<SourceManagementPage> {
     final result = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
+        scrollable: true,
+        icon: const Icon(Icons.key_rounded),
         title: Text(existing == null ? '添加源凭据' : '更新源凭据'),
         content: Form(
           key: form,
@@ -128,7 +130,7 @@ class _SourceManagementPageState extends State<SourceManagementPage> {
                       DropdownMenuItem(
                         value: config.url,
                         child: Text(
-                          config.name,
+                          c.configName(config),
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),

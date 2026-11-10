@@ -1,0 +1,10 @@
+cmake_minimum_required(VERSION 3.22.1)
+project(liuguang_dex_compat LANGUAGES CXX)
+add_library(liuguang_dex_compat SHARED dex_compat.cpp)
+target_compile_features(liuguang_dex_compat PRIVATE cxx_std_17)
+target_compile_options(liuguang_dex_compat PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(liuguang_dex_compat PRIVATE log)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    # Device tests exercise all JNI constructor forms; release builds omit the fixture.
+    target_sources(liuguang_dex_compat PRIVATE ../../androidTest/cpp/dex_factory_fixture.cpp)
+endif()

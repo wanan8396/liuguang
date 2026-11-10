@@ -1,0 +1,38 @@
+<resources>
+    <color name="plugin_surface">#FFFFFF</color>
+    <color name="plugin_text">#172334</color>
+    <color name="plugin_muted">#637185</color>
+    <color name="plugin_primary">#2869AF</color>
+    <color name="plugin_soft">#EFF5FD</color>
+    <style name="LiuguangPluginHostTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:alertDialogTheme">@style/LiuguangPluginAlertTheme</item>
+        <item name="android:colorAccent">@color/plugin_primary</item>
+        <item name="android:fontFamily">sans</item>
+    </style>
+    <style name="LiuguangPluginAlertTheme" parent="android:style/Theme.Material.Light.Dialog.Alert">
+        <item name="android:windowBackground">@drawable/plugin_dialog_background</item>
+        <item name="android:windowMinWidthMajor">86%</item>
+        <item name="android:windowMinWidthMinor">90%</item>
+        <item name="android:backgroundDimAmount">0.42</item>
+        <item name="android:colorBackground">@color/plugin_surface</item>
+        <item name="android:colorAccent">@color/plugin_primary</item>
+        <item name="android:textColorPrimary">@color/plugin_text</item>
+        <item name="android:textColorSecondary">@color/plugin_muted</item>
+        <item name="android:fontFamily">sans</item>
+        <item name="android:buttonBarButtonStyle">@style/LiuguangPluginDialogButton</item>
+        <item name="android:buttonBarPositiveButtonStyle">@style/LiuguangPluginDialogButton</item>
+        <item name="android:buttonBarNegativeButtonStyle">@style/LiuguangPluginDialogButton</item>
+        <item name="android:buttonBarNeutralButtonStyle">@style/LiuguangPluginDialogButton</item>
+    </style>
+    <style name="LiuguangPluginDialogButton" parent="android:style/Widget.Material.Button.Borderless">
+        <item name="android:textColor">@color/plugin_primary</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:minHeight">48dp</item>
+        <item name="android:minWidth">76dp</item>
+        <item name="android:background">@drawable/plugin_dialog_button</item>
+        <item name="android:paddingLeft">18dp</item>
+        <item name="android:paddingRight">18dp</item>
+    </style>
+</resources>

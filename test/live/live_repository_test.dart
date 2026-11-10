@@ -107,6 +107,21 @@ void main() {
     expect(direct.single.urls, ['https://a.test/direct.m3u8']);
     expect(adapter.requests, isEmpty);
   });
+  test('嵌套列表中坏节点不会丢失前后有效频道', () async {
+    final errors = <String>[];
+    final channels = await repository.load([
+      {
+        'name': '组',
+        'channels': [
+          {'name': '甲', 'url': 'https://a.test/a.m3u8'},
+          {'name': '无地址'},
+          {'name': '乙', 'url': 'https://a.test/b.m3u8'},
+        ],
+      },
+    ], onError: errors.add);
+    expect(channels.map((c) => c.name), ['甲', '乙']);
+    expect(errors.single, contains('无地址'));
+  });
   test('loopback requires plugin fetcher and never reaches HTTP', () async {
     await expectLater(
       repository.load([

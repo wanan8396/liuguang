@@ -13,6 +13,7 @@ class TestNativeApi extends SourceEngineApi {
   int closed = 0;
   int cancelled = 0;
   int resolved = 0;
+  Map<String, dynamic>? resolutionInput;
   String result = jsonEncode({
     'url': 'https://media.invalid/video.m3u8',
     'parse': 0,
@@ -63,6 +64,7 @@ class TestNativeApi extends SourceEngineApi {
     String parserJson,
   ) async {
     resolved++;
+    resolutionInput = jsonDecode(resultJson) as Map<String, dynamic>;
     return '{"url":"https://media.invalid/resolved.m3u8","parse":0,"header":{"Cookie":"session=test"}}';
   }
 
@@ -99,59 +101,83 @@ void main() {
   });
 
   test('取消等待凭据的初始化不会执行插件', () async {
-    engine.isTrusted = (_) => true;
     final credentials = Completer<Map<String, String>>();
     engine.loadCredentials = (_) => credentials.future;
     final pending = engine.home(config, site);
-    final assertion = expectLater(pending, throwsA(isA<SourceFailure>()
-        .having((e) => e.code, 'code', 'cancelled')));
+    final assertion = expectLater(
+      pending,
+      throwsA(isA<SourceFailure>().having((e) => e.code, 'code', 'cancelled')),
+    );
     final cancellation = engine.cancel();
     credentials.complete({});
     await assertion;
     await cancellation;
     expect(native.opened, 0);
   });
+  test('多清晰度URL数组从主程序传给原生解析，不把数组误当网址', () async {
+    final urls = [
+      '1080P',
+      'https://media.invalid/1080.mp4',
+      '720P',
+      'https://media.invalid/720.mp4',
+    ];
+    native.result = jsonEncode({'url': urls, 'parse': 0});
+    final playback = await engine.play(config, site, 'line', 'episode');
+    expect(native.resolved, 1);
+    expect(native.resolutionInput!['url'], urls);
+    expect(playback.url, 'https://media.invalid/resolved.m3u8');
+  });
 
-  test('等待凭据时撤销信任不能继续打开插件', () async {
-    var trusted = true;
-    engine.isTrusted = (_) => trusted;
+  test('等待凭据时关闭会话不能继续打开插件', () async {
     final credentials = Completer<Map<String, String>>();
     engine.loadCredentials = (_) => credentials.future;
     final pending = engine.home(config, site);
     final assertion = expectLater(pending, throwsA(isA<SourceFailure>()));
-    trusted = false;
+    final closing = engine.closeSessions();
     credentials.complete({});
     await assertion;
+    await closing;
     expect(native.opened, 0);
   });
 
   test('UDP及无扩展名直播不依赖点播插件', () async {
-    for (final url in ['udp://239.1.2.3:1234', 'rtp://239.1.2.4:1234',
-      'http://media.invalid/udp/channel']) {
-      final playback = await engine.playLive(null, null,
-        LiveChannel(name: '频道', urls: [url], headers: {'User-Agent': 'test'}));
+    for (final url in [
+      'udp://239.1.2.3:1234',
+      'rtp://239.1.2.4:1234',
+      'http://media.invalid/udp/channel',
+    ]) {
+      final playback = await engine.playLive(
+        null,
+        null,
+        LiveChannel(name: '频道', urls: [url], headers: {'User-Agent': 'test'}),
+      );
       expect(playback.url, url);
       expect(playback.headers['User-Agent'], 'test');
     }
     expect(native.opened, 0);
   });
 
-  test('未经信任的配置不能执行远程插件', () async {
-    await expectLater(
-      engine.home(config, site),
-      throwsA(
-        isA<SourceFailure>().having(
-          (failure) => failure.code,
-          'code',
-          'plugin-consent',
-        ),
-      ),
+  test('JAR 和 JS 插件默认自动加载，无需手动信任', () async {
+    for (final api in ['csp_Fixture', 'https://repo.invalid/rule.js']) {
+      final automatic = Site({'key': api, 'api': api, 'type': 3});
+      final page = await engine.home(config, automatic);
+      expect(page.categories.single.name, '电影');
+    }
+    expect(native.opened, 2);
+  });
+
+  test('配置更新后自动打开新的插件会话', () async {
+    await engine.home(config, site);
+    final updated = TvConfig(
+      url: config.url,
+      name: config.name,
+      raw: {'spider': 'https://repo.invalid/updated.jar'},
     );
-    expect(native.opened, 0);
+    await engine.home(updated, site);
+    expect(native.opened, 2);
   });
 
   test('并发调用共享同一初始化而不是多次加载插件', () async {
-    engine.isTrusted = (_) => true;
     final pages = await Future.wait([
       engine.home(config, site),
       engine.home(config, site),
@@ -162,7 +188,6 @@ void main() {
   });
 
   test('搜索详情播放传递真实结构及请求头', () async {
-    engine.isTrusted = (_) => true;
     final search = await engine.search(config, site, '测试');
     final detail = await engine.detail(config, site, search.items.single.id);
     final playback = await engine.play(
@@ -173,12 +198,16 @@ void main() {
     );
     expect(search.items.single.name, '测试');
     expect(detail.lines.single.episodes.single.name, '正片');
-    expect(playback.headers['Referer'], 'https://origin.invalid/');
-    expect(native.resolved, 0);
+    expect(
+      jsonMap(native.resolutionInput?['header'])['Referer'],
+      'https://origin.invalid/',
+    );
+    expect(playback.headers['Cookie'], 'session=test');
+    expect(native.resolved, 1);
+    expect(playback.url, 'https://media.invalid/resolved.m3u8');
   });
 
   test('页面结果经过原生解析而不是直接送播放器', () async {
-    engine.isTrusted = (_) => true;
     native.result = '{"url":"https://page.invalid/watch/1","parse":1}';
     final playback = await engine.play(config, site, 'line', 'id');
     expect(native.resolved, 1);
@@ -187,7 +216,6 @@ void main() {
   });
 
   test('原生插件异常不能伪装成空列表成功', () async {
-    engine.isTrusted = (_) => true;
     native.failHome = true;
     await expectLater(
       engine.home(config, site),
@@ -202,7 +230,6 @@ void main() {
   });
 
   test('取消与关闭会通知原生会话', () async {
-    engine.isTrusted = (_) => true;
     await engine.home(config, site);
     await engine.cancel();
     await engine.closeSessions();
@@ -211,7 +238,6 @@ void main() {
   });
 
   test('空播放地址和危险本地协议被拒绝', () async {
-    engine.isTrusted = (_) => true;
     native.result = '{"url":"","parse":0}';
     await expectLater(
       engine.play(config, site, 'line', 'id'),

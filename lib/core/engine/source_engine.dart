@@ -29,8 +29,6 @@ class SourceEngine {
   int _sessionGeneration = 0;
   int _requestGeneration = 0;
   bool _disposed = false;
-  bool pluginsTrusted = false;
-  bool Function(TvConfig config)? isTrusted;
   Future<Map<String, String>> Function(TvConfig config)? loadCredentials;
 
   String _key(TvConfig config, Site site) =>
@@ -43,9 +41,6 @@ class SourceEngine {
     if (!_isAndroid) {
       throw const SourceFailure('platform', '该源需要 Android 原生运行引擎');
     }
-    if (_isNative(site) && !(isTrusted?.call(config) ?? pluginsTrusted)) {
-      throw const SourceFailure('plugin-consent', '请先在订阅管理中确认并信任此订阅的插件来源');
-    }
     final key = _key(config, site);
     final existing = _sessions[key];
     if (existing != null) return existing;
@@ -53,9 +48,8 @@ class SourceEngine {
     final future = () async {
       final credentials =
           await loadCredentials?.call(config) ?? <String, String>{};
-      if (_disposed || generation != _sessionGeneration ||
-          (_isNative(site) && !(isTrusted?.call(config) ?? pluginsTrusted))) {
-        throw const SourceFailure('cancelled', '源初始化已取消或授权已撤销');
+      if (_disposed || generation != _sessionGeneration) {
+        throw const SourceFailure('cancelled', '源初始化已取消');
       }
       final payload = {
         ...config.toJson(),
@@ -65,10 +59,9 @@ class SourceEngine {
         () =>
             _native.openSession(jsonEncode(payload), jsonEncode(site.toJson())),
       );
-      if (_disposed || generation != _sessionGeneration ||
-          (_isNative(site) && !(isTrusted?.call(config) ?? pluginsTrusted))) {
+      if (_disposed || generation != _sessionGeneration) {
         await _invoke(() => _native.closeSession(id));
-        throw const SourceFailure('cancelled', '源初始化已取消或授权已撤销');
+        throw const SourceFailure('cancelled', '源初始化已取消');
       }
       return id;
     }();
@@ -95,12 +88,15 @@ class SourceEngine {
     }
   }
 
-  Future<T> _dispatch<T>(TvConfig config, Site site, Future<T> Function(String id) call) async {
+  Future<T> _dispatch<T>(
+    TvConfig config,
+    Site site,
+    Future<T> Function(String id) call,
+  ) async {
     final generation = _requestGeneration;
     final id = await _session(config, site);
-    if (_disposed || generation != _requestGeneration ||
-        (_isNative(site) && !(isTrusted?.call(config) ?? pluginsTrusted))) {
-      throw const SourceFailure('cancelled', '源请求已取消或授权已撤销');
+    if (_disposed || generation != _requestGeneration) {
+      throw const SourceFailure('cancelled', '源请求已取消');
     }
     final result = await _invoke(() => call(id));
     if (_disposed || generation != _requestGeneration) {
@@ -113,7 +109,9 @@ class SourceEngine {
     _checkSite(site);
     if (_isNative(site)) {
       return VodPage.fromJson(
-        _parseObject(await _dispatch(config, site, (id) => _native.home(id, true))),
+        _parseObject(
+          await _dispatch(config, site, (id) => _native.home(id, true)),
+        ),
       );
     }
     final result = await _request(
@@ -134,8 +132,13 @@ class SourceEngine {
     _checkSite(site);
     if (_isNative(site)) {
       return VodPage.fromJson(
-        _parseObject(await _dispatch(config, site,
-          (id) => _native.category(id, tid, page, jsonEncode(filters)))),
+        _parseObject(
+          await _dispatch(
+            config,
+            site,
+            (id) => _native.category(id, tid, page, jsonEncode(filters)),
+          ),
+        ),
       );
     }
     final params = <String, String>{'ac': 'detail', 't': tid, 'pg': '$page'};
@@ -158,8 +161,13 @@ class SourceEngine {
     _checkSite(site);
     if (_isNative(site)) {
       return VodPage.fromJson(
-        _parseObject(await _dispatch(config, site,
-          (id) => _native.search(id, keyword, page))),
+        _parseObject(
+          await _dispatch(
+            config,
+            site,
+            (id) => _native.search(id, keyword, page),
+          ),
+        ),
       );
     }
     return VodPage.fromJson(
@@ -176,8 +184,9 @@ class SourceEngine {
     _checkSite(site);
     final Map<String, dynamic> result;
     if (_isNative(site)) {
-      result = _parseObject(await _dispatch(config, site,
-        (session) => _native.detail(session, id)));
+      result = _parseObject(
+        await _dispatch(config, site, (session) => _native.detail(session, id)),
+      );
     } else {
       result = await _request(config, site, {'ac': 'detail', 'ids': id});
     }
@@ -195,8 +204,13 @@ class SourceEngine {
     _checkSite(site);
     var result = <String, dynamic>{};
     if (_isNative(site)) {
-      result = _parseObject(await _dispatch(config, site,
-        (session) => _native.play(session, flag, id)));
+      result = _parseObject(
+        await _dispatch(
+          config,
+          site,
+          (session) => _native.play(session, flag, id),
+        ),
+      );
     } else if (site.type == 4) {
       result = await _request(config, site, {'play': id, 'flag': flag});
     } else {
@@ -209,13 +223,27 @@ class SourceEngine {
     final playback = Playback.fromJson(result);
     final isLocal = _isLoopback(playback.url);
     final requiresResolution =
+        result['url'] is List ||
         playback.parse ||
         intValue(result['jx']) != 0 ||
         str(result['playUrl']).isNotEmpty ||
-        isLocal;
+        isLocal ||
+        // Android's proxy owns HTTP headers, redirects and HLS subrequests even
+        // when the source already returned a direct media URL (parse=0).
+        (_isAndroid &&
+            {'http', 'https'}.contains(Uri.tryParse(playback.url)?.scheme));
     if (requiresResolution) {
-      final resolved = _parseObject(await _dispatch(config, site,
-        (session) => _native.resolve(session, jsonEncode(result), jsonEncode(config.parses))));
+      final resolved = _parseObject(
+        await _dispatch(
+          config,
+          site,
+          (session) => _native.resolve(
+            session,
+            jsonEncode(result),
+            jsonEncode(config.parses),
+          ),
+        ),
+      );
       final finalResult = Playback.fromJson(resolved);
       if (finalResult.parse || finalResult.url.isEmpty) {
         throw const SourceFailure('unresolved', '解析器尚未返回可播放地址');
@@ -239,23 +267,35 @@ class SourceEngine {
     final url = channel.urls[index];
     _validatePlaybackUrl(url);
     final uri = Uri.parse(url);
-    final explicitWebPage = uri.path.endsWith('.html') || uri.path.endsWith('.htm');
+    final explicitWebPage =
+        uri.path.endsWith('.html') || uri.path.endsWith('.htm');
     if (!_isLoopback(url) && !explicitWebPage) {
       return Playback(url: url, headers: channel.headers);
     }
     final selectedConfig =
         config ?? TvConfig(url: url, name: '直播', raw: const {});
     final selectedSite = _isLoopback(url) && site != null
-        ? site : Site({'key': '__live__', 'api': url, 'type': 4});
+        ? site
+        : Site({'key': '__live__', 'api': url, 'type': 4});
     final result = {
       'url': url,
       'header': channel.headers,
       'parse': _isLoopback(url) ? 0 : 1,
       'flag': 'live',
     };
-    final resolved = Playback.fromJson(_parseObject(
-      await _dispatch(selectedConfig, selectedSite,
-        (session) => _native.resolve(session, jsonEncode(result), jsonEncode(selectedConfig.parses)))));
+    final resolved = Playback.fromJson(
+      _parseObject(
+        await _dispatch(
+          selectedConfig,
+          selectedSite,
+          (session) => _native.resolve(
+            session,
+            jsonEncode(result),
+            jsonEncode(selectedConfig.parses),
+          ),
+        ),
+      ),
+    );
     if (resolved.parse || resolved.url.isEmpty) {
       throw const SourceFailure('unresolved-live', '频道尚未解析出可播放地址');
     }
@@ -267,7 +307,11 @@ class SourceEngine {
     if (!_isLoopback(url)) {
       throw const SourceFailure('not-local', '只允许访问当前源的本机代理地址');
     }
-    return _dispatch(config, site, (session) => _native.fetchLocal(session, url));
+    return _dispatch(
+      config,
+      site,
+      (session) => _native.fetchLocal(session, url),
+    );
   }
 
   Future<void> cancel() async {

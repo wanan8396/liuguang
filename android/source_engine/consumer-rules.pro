@@ -10,6 +10,14 @@
 -keep class com.orhanobut.logger.** { *; }
 -keepclasseswithmembernames,includedescriptorclasses class * { native <methods>; }
 -keepattributes Signature,*Annotation*,InnerClasses,EnclosingMethod
+# Release builds do not emit host debug logs; preserve exception handling.
+-assumenosideeffects class android.util.Log {
+    public static int v(...);
+    public static int d(...);
+    public static int i(...);
+    public static int w(...);
+    public static int e(...);
+}
 -dontwarn com.dylibso.**
 # Optional desktop TLS providers are not installed; Android uses its system TLS.
 -dontwarn org.bouncycastle.jsse.BCSSLParameters

@@ -242,6 +242,19 @@ class Playback {
   final String? subtitle;
   final bool parse;
   final Map<String, dynamic> raw;
+
+  /// Upstream headers remain available for subtitles and the source proxy.
+  /// The local media request must not look like a cross-origin browser request.
+  Map<String, String> get mediaHeaders {
+    final host = Uri.tryParse(url)?.host;
+    if (!{'localhost', '127.0.0.1', '::1', '[::1]'}.contains(host)) {
+      return headers;
+    }
+    return Map.fromEntries(
+      headers.entries.where((entry) => entry.key.toLowerCase() != 'origin'),
+    );
+  }
+
   factory Playback.fromJson(Map<String, dynamic> json) {
     var header = json['header'] ?? json['headers'];
     if (header is String && header.trim().startsWith('{')) {
@@ -268,6 +281,9 @@ class LiveChannel {
     this.tvgId = '',
     this.epg = '',
     this.headers = const {},
+    this.configUrl = '',
+    this.siteKey = '',
+    this.sourceName = '',
   });
   final String name;
   final List<String> urls;
@@ -276,6 +292,7 @@ class LiveChannel {
   final String tvgId;
   final String epg;
   final Map<String, String> headers;
+  final String configUrl, siteKey, sourceName;
   Map<String, dynamic> toJson() => {
     'name': name,
     'urls': urls,
@@ -284,6 +301,9 @@ class LiveChannel {
     'tvgId': tvgId,
     'epg': epg,
     'headers': headers,
+    'configUrl': configUrl,
+    'siteKey': siteKey,
+    'sourceName': sourceName,
   };
   factory LiveChannel.fromJson(Map<String, dynamic> json) => LiveChannel(
     name: str(json['name']),
@@ -293,6 +313,9 @@ class LiveChannel {
     tvgId: str(json['tvgId']),
     epg: str(json['epg']),
     headers: jsonMap(json['headers']).map((k, v) => MapEntry(k, str(v))),
+    configUrl: str(json['configUrl']),
+    siteKey: str(json['siteKey']),
+    sourceName: str(json['sourceName']),
   );
 }
 

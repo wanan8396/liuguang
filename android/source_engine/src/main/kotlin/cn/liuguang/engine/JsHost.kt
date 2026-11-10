@@ -25,7 +25,7 @@ class JsHost(private val session: EngineSession,private val api: String): AutoCl
         bind("__pdfa") { a -> JSONArray(HtmlAdapter.array(a[0].toString(),a[1].toString())).toString() }
         bind("__local") { a -> val k=a[1].toString()+"/"+a[2].toString(); when(a[0].toString()) { "get" -> local.getString(k,a.getOrNull(3)?.toString().orEmpty()); "set" -> { local.edit().putString(k,a[3].toString()).apply(); true }; "delete" -> { local.edit().remove(k).apply(); true }; else -> error("Unknown local storage operation") } }
         bind("__proxy") { _ -> com.github.catvod.Proxy.getUrl(true)+"?sid="+session.id+"&do=js" }
-        bind("__log") { a -> Log.d("SourceEngineJS",a.joinToString(" ")); null }
+        bind("__log") { _ -> null }
         bind("__joinUrl") { a -> EngineRules.resolve(a[0].toString(),a[1].toString()) }
         com.fongmi.quickjs.Encoding.install(q).get()
         q.setModuleLoader(object: QuickJS.ModuleLoader {
@@ -81,9 +81,10 @@ class JsHost(private val session: EngineSession,private val api: String): AutoCl
         val code="(async()=>{const s=__spider;const fn=s[${JSONObject.quote(name)}]||s[${JSONObject.quote(aliases)}]; if(!fn) throw Error('Missing spider method: $name'); let a=$json; if('$method'==='detail'&&!s.detail)a=[a]; const v=await fn.apply(s,a); return typeof v==='string'?v:JSON.stringify(v);})()"
         val result=q.evaluateTimed(30000,code,api+"#"+method).get(35,TimeUnit.SECONDS).toString()
         val jsonResult=JSONObject(result)
-        if(method=="home" && !jsonResult.has("list")) {
-            val videos=q.evaluateTimed(30000,"(async()=>{const fn=__spider.homeVod||__spider.homeVideoContent;if(!fn)return null;const v=await fn.call(__spider);return typeof v==='string'?v:JSON.stringify(v);})()",api+"#homeVod").get(35,TimeUnit.SECONDS)
-            videos?.toString()?.takeIf { it.isNotBlank() }?.let { JSONObject(it).optJSONArray("list")?.let { list -> jsonResult.put("list",list) } }
+        if(method=="home" && (jsonResult.optJSONArray("list")?.length() ?: 0) == 0) {
+            return HomeResponse.merge(result) {
+                q.evaluateTimed(30000,"(async()=>{const fn=__spider.homeVod||__spider.homeVideoContent;if(!fn)return null;const v=await fn.call(__spider);return typeof v==='string'?v:JSON.stringify(v);})()",api+"#homeVod").get(35,TimeUnit.SECONDS)?.toString().orEmpty()
+            }
         }
         return jsonResult.toString()
     }

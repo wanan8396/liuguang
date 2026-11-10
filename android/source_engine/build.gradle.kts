@@ -45,6 +45,8 @@ val ciFlutterEngineVersion = if (ciEmulator) {
 
 android {
     namespace = "cn.liuguang.engine"
+    ndkVersion = "28.2.13676358"
+    externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" } }
     compileSdk = 36
     defaultConfig { minSdk = 24; consumerProguardFiles("consumer-rules.pro"); testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17; isCoreLibraryDesugaringEnabled = true }

@@ -88,5 +88,42 @@ ThemeData _theme(Brightness brightness) {
       color: colors.outlineVariant.withValues(alpha: 0.5),
       thickness: 0.5,
     ),
+    bottomSheetTheme: const BottomSheetThemeData(
+      constraints: BoxConstraints(maxWidth: 640),
+      surfaceTintColor: Colors.transparent,
+      elevation: 0,
+    ),
+    dialogTheme: DialogThemeData(
+      backgroundColor: colors.surface,
+      surfaceTintColor: Colors.transparent,
+      elevation: 0,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(26)),
+      titleTextStyle: TextStyle(
+        color: colors.onSurface,
+        fontSize: 20,
+        fontWeight: FontWeight.w700,
+      ),
+      contentTextStyle: TextStyle(
+        color: colors.onSurfaceVariant,
+        fontSize: 14,
+        height: 1.55,
+      ),
+      actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
+    ),
+    popupMenuTheme: PopupMenuThemeData(
+      color: colors.surface,
+      surfaceTintColor: Colors.transparent,
+      elevation: 8,
+      shadowColor: Colors.black.withValues(alpha: .14),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      menuPadding: const EdgeInsets.all(6),
+    ),
+    snackBarTheme: SnackBarThemeData(
+      behavior: SnackBarBehavior.floating,
+      elevation: 0,
+      backgroundColor: colors.inverseSurface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      insetPadding: const EdgeInsets.fromLTRB(16, 8, 16, 20),
+    ),
   );
 }

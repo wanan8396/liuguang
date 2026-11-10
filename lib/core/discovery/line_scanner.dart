@@ -4,8 +4,10 @@ import 'dart:io' show HandshakeException;
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
+import 'package:html/parser.dart' as html;
 
 import '../config/config_decoder.dart';
+import '../config/subscription_repository.dart';
 import '../models/models.dart';
 import '../network/app_http_client.dart';
 
@@ -30,7 +32,10 @@ const List<(String, String)> kSeedLines = [
   ('胖虎', 'https://notabug.org/imbig66/tv-spider-man/raw/master/配置/0801.json'),
   ('传说', 'https://chuanshuo.77blog.cn/tv.json'),
   ('宝盒接口', 'http://宝盒接口.top'),
-  ('高天流云', 'https://raw.githubusercontent.com/gaotianliuyun/gao/master/js.json'),
+  (
+    '高天流云',
+    'https://raw.githubusercontent.com/gaotianliuyun/gao/master/js.json',
+  ),
   ('多多聚合', 'https://raw.liucn.cc/box/dm.txt'),
   ('liucn-m', 'https://raw.liucn.cc/box/m.json'),
   ('gitee自建', 'https://gitee.com/lukei7/lib/raw/Luck/自建.json'),
@@ -59,7 +64,7 @@ const List<(String, String)> kSeedLines = [
   ('蚂蚁线路', 'https://cn.kstore.space/download/2883/0110.txt'),
   ('青龙线路', 'https://6758.kstore.space/1.json'),
   ('fmys', 'http://fmys.top/fmys.json'),
-  ('奇奇', 'http://z.qiqiv.cn/123'),
+  ('奇奇', 'http://z.qiqiv.cn/123.txt'),
   ('kstore-wex', 'https://9280.kstore.space/wex.json'),
   ('qxys', 'https://7337.kstore.space/qxys/禁止传播.json'),
   ('weixine', 'https://weixine.net/ysc.json'),
@@ -96,33 +101,94 @@ const List<String> kDiscoveryPages = [
 ];
 
 const Set<String> _skipSuffixes = {
-  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.ico', '.css', '.js',
-  '.woff', '.woff2', '.ttf', '.eot', '.mp4', '.mp3', '.zip',
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.webp',
+  '.svg',
+  '.ico',
+  '.css',
+  '.js',
+  '.woff',
+  '.woff2',
+  '.ttf',
+  '.eot',
+  '.mp4',
+  '.mp3',
+  '.zip',
 };
 
 const List<String> _skipKeywords = [
-  'github.com/', 'gitlab.com/', 'gitee.com/', 'zhihu.com', 'bilibili',
-  'baidu.com', 'google.com', 'bing.com', 'youtube', 'douyin', 'weibo',
-  'taobao', 'jd.com', 'xiaomi.com', '360.cn', 'sohu', '163.com', 'sina.com',
-  'cloudflare', 'jsdelivr.net', 'unpkg.com', 'gravatar', 'w3.org',
-  'mozilla.org', 'jquery', 'bootstrap', 'miit.gov.cn', 'flowus.cn',
-  'allflow.cn', 'staticfile.org',
+  'github.com/',
+  'gitlab.com/',
+  'gitee.com/',
+  'zhihu.com',
+  'bilibili',
+  'baidu.com',
+  'google.com',
+  'bing.com',
+  'youtube',
+  'douyin',
+  'weibo',
+  'taobao',
+  'jd.com',
+  'xiaomi.com',
+  '360.cn',
+  'sohu',
+  '163.com',
+  'sina.com',
+  'cloudflare',
+  'jsdelivr.net',
+  'unpkg.com',
+  'gravatar',
+  'w3.org',
+  'mozilla.org',
+  'jquery',
+  'bootstrap',
+  'miit.gov.cn',
+  'flowus.cn',
+  'allflow.cn',
+  'staticfile.org',
 ];
 
 const List<String> _lineKeywords = [
-  '/tv', '/box', '/api', '.json', '.txt', '/dc', 'kstore', 'jundie',
-  'catvod', 'tvbox', 'yingm', 'liucn', 'nxog', 'tspider', '/dm/', 'dcang',
-  '仓库', '线路', '接口', '配置',
+  '/tv',
+  '/box',
+  '/api',
+  '.json',
+  '.txt',
+  '/dc',
+  'kstore',
+  'jundie',
+  'catvod',
+  'tvbox',
+  'yingm',
+  'liucn',
+  'nxog',
+  'tspider',
+  '/dm/',
+  'dcang',
+  '仓库',
+  '线路',
+  '接口',
+  '配置',
 ];
 
 const String _ua = 'okhttp/4.12.0';
 
 /// 一条待验证的线路，或一个多仓下的子仓。
 class ScanNode {
-  ScanNode({required this.url, this.name = '', this.depth = 0});
+  ScanNode({
+    required this.url,
+    this.name = '',
+    this.depth = 0,
+    this.ancestors = const {},
+  });
   String url;
   String name;
   final int depth;
+  final Set<String> ancestors;
   String kind = 'unknown';
   String status = 'pending';
   String? error;
@@ -178,12 +244,14 @@ class _Probe {
     this.ttfbMs = -1,
     this.totalMs = -1,
     this.error = '',
+    this.finalUrl = '',
   }) : bytes = bytes ?? Uint8List(0);
   final bool ok;
   final Uint8List bytes;
   final int ttfbMs;
   final int totalMs;
   final String error;
+  final String finalUrl;
   factory _Probe.fail(String error, {int ttfbMs = -1, int totalMs = -1}) =>
       _Probe(ok: false, error: error, ttfbMs: ttfbMs, totalMs: totalMs);
 }
@@ -201,6 +269,8 @@ class LineScanner {
     this.deadline = const Duration(seconds: 180),
     this.maxBytes = 3 * 1024 * 1024,
     this.decoder = const ConfigDecoder(),
+    this.seeds = kSeedLines,
+    this.discoveryPages = kDiscoveryPages,
   }) : _dio =
            dio ??
            Dio(
@@ -210,7 +280,15 @@ class LineScanner {
                maxRedirects: 5,
                validateStatus: (_) => true,
              ),
-           );
+           ) {
+    if (poolSize < 1 ||
+        perHostLimit < 1 ||
+        nodeBudget < 1 ||
+        deadline <= Duration.zero ||
+        maxBytes < 1) {
+      throw ArgumentError('Invalid scan limits');
+    }
+  }
 
   final Dio _dio;
   final int poolSize;
@@ -219,6 +297,8 @@ class LineScanner {
   final Duration deadline;
   final int maxBytes;
   final ConfigDecoder decoder;
+  final List<(String, String)> seeds;
+  final List<String> discoveryPages;
 
   final List<ScanNode> roots = [];
   final Map<String, ScanNode> _cache = {};
@@ -228,19 +308,46 @@ class LineScanner {
   int _inFlight = 0;
   int _budget = 0;
   bool _running = false;
+  bool _discovering = false;
+  int _generation = 0;
+  final Set<CancelToken> _tokens = {};
   Completer<void>? _done;
   DateTime? _stopAt;
   void Function(ScanProgress)? onProgress;
 
   bool get running => _running;
 
+  List<ScanNode> get verifiedLines {
+    final byUrl = <String, ScanNode>{};
+    void walk(ScanNode node) {
+      if (!node.multi && node.available) {
+        byUrl.putIfAbsent(node.url, () => node);
+      }
+      node.children.forEach(walk);
+    }
+
+    roots.forEach(walk);
+    return byUrl.values.toList()
+      ..sort((a, b) => a.totalMs.compareTo(b.totalMs));
+  }
+
   void cancel() {
     _running = false;
+    _generation++;
     _stopAt = null;
-    for (final node in _queue) {
-      node.status = 'fail';
-      node.error = '已取消';
+    for (final token in _tokens.toList()) {
+      token.cancel('scan cancelled');
     }
+    _tokens.clear();
+    void mark(ScanNode node) {
+      if (node.status == 'pending') {
+        node.status = 'fail';
+        node.error = '已取消';
+      }
+      node.children.forEach(mark);
+    }
+
+    roots.forEach(mark);
     _queue.clear();
     final done = _done;
     if (done != null && !done.isCompleted) done.complete();
@@ -256,9 +363,12 @@ class LineScanner {
   Future<void> start() async {
     if (_running) return;
     _running = true;
+    final generation = ++_generation;
+    _discovering = true;
     _queue.clear();
     roots.clear();
     _cache.clear();
+    _hostBusy.clear();
     _pending = 0;
     _inFlight = 0;
     _completed = 0;
@@ -267,44 +377,49 @@ class LineScanner {
     final done = Completer<void>();
     _done = done;
 
-    _report('搜索线路', 0, kDiscoveryPages.length + 1, '收集公开入口');
-    final candidates = <(String, String)>[...kSeedLines];
     final seen = <String>{};
-    for (final seed in kSeedLines) {
-      final normalized = _tryNormalize(seed.$2);
-      if (normalized != null) seen.add(normalized);
+    void enqueue(List<(String, String)> candidates) {
+      for (final candidate in candidates) {
+        if (!_active(generation) || _budget <= 0) break;
+        final normalized = _tryNormalize(candidate.$2);
+        if (normalized == null || !seen.add(normalized)) continue;
+        _budget--;
+        final node = ScanNode(url: normalized, name: candidate.$1);
+        roots.add(node);
+        _pending++;
+        _queue.add(node);
+      }
+      _pump();
     }
 
+    enqueue(seeds);
+    _report('搜索线路', 0, discoveryPages.length, '收集公开入口');
     var pageIndex = 0;
-    final pages = kDiscoveryPages.map((page) async {
+    final pages = discoveryPages.map((page) async {
       final found = await _discover(page);
-      candidates.addAll(found);
+      if (!_active(generation)) return;
+      enqueue(found);
       pageIndex++;
       _report(
         '搜索线路',
         pageIndex,
-        kDiscoveryPages.length + 1,
-        found.isEmpty ? page : '${page.split('/').length > 2 ? page.split('/')[2] : page} +${found.length}',
+        discoveryPages.length,
+        found.isEmpty
+            ? page
+            : '${page.split('/').length > 2 ? page.split('/')[2] : page} +${found.length}',
       );
     }).toList();
     await Future.wait(pages);
 
-    for (final candidate in candidates) {
-      if (!_running || _budget <= 0) break;
-      final normalized = _tryNormalize(candidate.$2);
-      if (normalized == null || !seen.add(normalized)) continue;
-      _budget--;
-      final node = ScanNode(url: normalized, name: candidate.$1);
-      roots.add(node);
-      _pending++;
-      _queue.add(node);
-    }
-
+    if (!_active(generation)) return;
+    _discovering = false;
     _report('验证线路', 0, _pending, '共 $_pending 条候选');
     _pump();
     await done.future;
-    _running = false;
+    if (generation == _generation) _running = false;
   }
+
+  bool _active(int generation) => _running && generation == _generation;
 
   void _report(String stage, int done, int total, String info) {
     try {
@@ -326,25 +441,29 @@ class LineScanner {
         continue;
       }
       _inFlight++;
-      unawaited(_run(node));
+      unawaited(_run(node, _generation));
     }
-    if (_pending <= 0) {
+    if (_pending <= 0 && !_discovering) {
       final done = _done;
       if (done != null && !done.isCompleted) done.complete();
     }
   }
 
-  Future<void> _run(ScanNode node) async {
+  Future<void> _run(ScanNode node, int generation) async {
     try {
-      await _process(node);
+      await _process(node, generation);
     } catch (error) {
-      node.status = 'fail';
-      node.error = '$error';
+      if (_active(generation)) {
+        node.status = 'fail';
+        node.error = '$error';
+      }
     } finally {
-      _inFlight--;
-      _pending--;
-      _emit();
-      _pump();
+      if (_active(generation)) {
+        _inFlight--;
+        _pending--;
+        _emit();
+        _pump();
+      }
     }
   }
 
@@ -354,14 +473,14 @@ class LineScanner {
     _report('验证线路', _completed, _completed + _pending, '');
   }
 
-  Future<void> _process(ScanNode node) async {
-    if (!_running) {
+  Future<void> _process(ScanNode node, int generation) async {
+    if (!_active(generation)) {
       node.status = 'fail';
       node.error = '已取消';
       return;
     }
     final cached = _cache[node.url];
-    if (cached != null && cached.available) {
+    if (cached != null && cached.available && !cached.multi) {
       node
         ..kind = cached.kind
         ..status = cached.status
@@ -370,8 +489,8 @@ class LineScanner {
         ..totalMs = cached.totalMs
         ..sizeKb = cached.sizeKb
         ..speedLabel = cached.speedLabel
-        ..siteCount = cached.siteCount;
-      node.children.addAll(cached.children);
+        ..siteCount = cached.siteCount
+        ..url = cached.url;
       return;
     }
 
@@ -381,12 +500,14 @@ class LineScanner {
       () => _fetch(node.url, _timeoutFor(node.depth)),
     );
     // 首轮明显偏慢时给一次更宽松的重测机会，避免把抖动当成慢站。
-    if (probe.ok && probe.totalMs > 3000 && _running) {
+    if (probe.ok && probe.totalMs > 3000 && _active(generation)) {
       final retry = await _withHostSlot(host, () => _fetch(node.url, 14000));
-      if (retry.ok && (retry.totalMs < probe.totalMs || retry.ttfbMs < probe.ttfbMs)) {
+      if (retry.ok &&
+          (retry.totalMs < probe.totalMs || retry.ttfbMs < probe.ttfbMs)) {
         probe = retry;
       }
     }
+    if (!_active(generation)) return;
     node
       ..ttfbMs = probe.ttfbMs
       ..totalMs = probe.totalMs
@@ -416,6 +537,8 @@ class LineScanner {
     node.status = 'ok';
     node.speedLabel = gradeSpeed(node.totalMs);
     _cache[node.url] = node;
+    // A redirected config's plugin, ext and child URLs share its final base.
+    if (probe.finalUrl.isNotEmpty) node.url = probe.finalUrl;
 
     if (!node.multi) return;
     if (node.depth >= 3) {
@@ -425,14 +548,24 @@ class LineScanner {
     final children = childrenOf(raw, node.kind);
     for (final child in children.take(100)) {
       if (!_running) break;
-      final resolved = _tryNormalize(
-        Uri.parse(node.url).resolve(child.$2.trim()).toString(),
-      );
+      String? resolved;
+      try {
+        resolved = _tryNormalize(
+          Uri.parse(node.url).resolve(child.$2.trim()).toString(),
+        );
+      } on FormatException {
+        continue;
+      }
       if (resolved == null) continue;
+      if (node.ancestors.contains(resolved) ||
+          subtreeContains(node, resolved)) {
+        continue;
+      }
       final sub = ScanNode(
         url: resolved,
         name: child.$1,
         depth: node.depth + 1,
+        ancestors: {...node.ancestors, node.url},
       );
       node.children.add(sub);
     }
@@ -450,20 +583,23 @@ class LineScanner {
   }
 
   Future<T> _withHostSlot<T>(String host, Future<T> Function() task) async {
-    var spins = 0;
-    while (_running && (_hostBusy[host] ?? 0) >= perHostLimit) {
+    final generation = _generation;
+    while (_active(generation) && (_hostBusy[host] ?? 0) >= perHostLimit) {
       await Future<void>.delayed(const Duration(milliseconds: 80));
-      if (++spins > 150) break;
     }
+    if (!_active(generation)) throw StateError('已取消');
+    if (DateTime.now().isAfter(_stopAt!)) throw StateError('超过总时间预算');
     _hostBusy[host] = (_hostBusy[host] ?? 0) + 1;
     try {
       return await task();
     } finally {
-      final left = (_hostBusy[host] ?? 1) - 1;
-      if (left <= 0) {
-        _hostBusy.remove(host);
-      } else {
-        _hostBusy[host] = left;
+      if (generation == _generation) {
+        final left = (_hostBusy[host] ?? 1) - 1;
+        if (left <= 0) {
+          _hostBusy.remove(host);
+        } else {
+          _hostBusy[host] = left;
+        }
       }
     }
   }
@@ -471,6 +607,16 @@ class LineScanner {
   Future<_Probe> _fetch(String url, int timeoutMs) async {
     final watch = Stopwatch()..start();
     final token = CancelToken();
+    _tokens.add(token);
+    final remaining = _stopAt?.difference(DateTime.now()).inMilliseconds ?? 0;
+    final limit = remaining < timeoutMs ? remaining : timeoutMs;
+    if (limit <= 0) {
+      _tokens.remove(token);
+      return _Probe.fail('超过总时间预算');
+    }
+    final timer = Timer(Duration(milliseconds: limit), () {
+      token.cancel('probe timeout');
+    });
     try {
       final response = await _dio
           .getUri<ResponseBody>(
@@ -481,13 +627,13 @@ class LineScanner {
               followRedirects: true,
               maxRedirects: 5,
               validateStatus: (_) => true,
-              receiveTimeout: Duration(milliseconds: timeoutMs),
-              sendTimeout: Duration(milliseconds: timeoutMs),
+              receiveTimeout: Duration(milliseconds: limit),
+              sendTimeout: Duration(milliseconds: limit),
               headers: const {'User-Agent': _ua},
             ),
           )
           .timeout(
-            Duration(milliseconds: timeoutMs + 2000),
+            Duration(milliseconds: limit),
             onTimeout: () {
               token.cancel('probe timeout');
               throw TimeoutException('probe timeout');
@@ -522,13 +668,19 @@ class LineScanner {
         bytes: builder.takeBytes(),
         ttfbMs: ttfb,
         totalMs: watch.elapsedMilliseconds,
+        finalUrl: normalizeHttpUrl(response.realUri.toString()).toString(),
       );
     } on DioException catch (error) {
-      return _Probe.fail(_describe(error));
+      return _Probe.fail(
+        token.cancelError?.message == 'probe timeout' ? '超时' : _describe(error),
+      );
     } on TimeoutException {
       return _Probe.fail('超时');
     } catch (error) {
       return _Probe.fail('$error');
+    } finally {
+      timer.cancel();
+      _tokens.remove(token);
     }
   }
 
@@ -547,9 +699,28 @@ class LineScanner {
   Future<List<(String, String)>> _discover(String page) async {
     final found = <(String, String)>[];
     if (!_running) return found;
-    final host = Uri.parse(page).host;
-    final probe = await _withHostSlot(host, () => _fetch(page, 6000));
+    final normalized = _tryNormalize(page);
+    if (normalized == null) return found;
+    final generation = _generation;
+    final _Probe probe;
+    try {
+      probe = await _withHostSlot(
+        Uri.parse(normalized).host,
+        () => _fetch(normalized, 6000),
+      );
+    } catch (_) {
+      return found;
+    }
+    if (!_active(generation)) return found;
     if (!probe.ok || probe.bytes.isEmpty) return found;
+    try {
+      final raw = decoder.decode(probe.bytes);
+      if (classifyConfig(raw) != 'unknown') {
+        return [(str(raw['name']), probe.finalUrl)];
+      }
+    } catch (_) {
+      // Discovery pages may contain HTML around subscription links.
+    }
     String text;
     try {
       text = utf8.decode(probe.bytes, allowMalformed: true);
@@ -582,17 +753,26 @@ class LineScanner {
 List<String> extractConfigUrls(String text) {
   final out = <String>[];
   if (text.isEmpty) return out;
-  final pattern = RegExp(r'''https?://[^\s"'<>()\[\]]+''', caseSensitive: false);
-  for (final match in pattern.allMatches(text)) {
+  final document = html.parseFragment(text);
+  final content = [
+    document.text ?? '',
+    for (final element in document.querySelectorAll('a[href]'))
+      element.attributes['href'] ?? '',
+  ].join('\n');
+  final pattern = RegExp(
+    r'''https?://[^\s"'<>()\[\]]+''',
+    caseSensitive: false,
+  );
+  for (final match in pattern.allMatches(content)) {
     if (out.length >= 60) break;
-    final trimmed = match.group(0)!.replaceAll(
-      RegExp(r'''[.,;:，。；：、)\]"}>]+$'''),
-      '',
-    );
+    final trimmed = match
+        .group(0)!
+        .replaceAll(RegExp(r'''[.,;:，。；：、)\]"}>]+$'''), '');
     final lower = trimmed.toLowerCase();
     if (!lower.startsWith('http')) continue;
     if (_skipSuffixes.any(lower.endsWith)) continue;
-    if (_skipKeywords.any(lower.contains)) continue;
+    final rawRepository = lower.contains('/-/raw/') || lower.contains('/raw/');
+    if (_skipKeywords.any(lower.contains) && !rawRepository) continue;
     if (lower.contains('.html') ||
         lower.contains('/app/') ||
         lower.contains('/soft') ||
@@ -631,10 +811,7 @@ String classifyConfig(Map<String, dynamic> raw) {
   if (store is List && store.isNotEmpty) return 'multi_storehouse';
   final urls = raw['urls'];
   if (urls is List && urls.isNotEmpty) return 'multi_urls';
-  if (raw.containsKey('sites') ||
-      raw.containsKey('lives') ||
-      raw.containsKey('parses') ||
-      raw.containsKey('spider')) {
+  if (raw['sites'] is List || raw['lives'] is List) {
     return 'single';
   }
   return 'unknown';
@@ -649,44 +826,17 @@ int siteCountOf(Map<String, dynamic> raw) {
 
 /// 多仓展开出来的子入口。
 List<(String, String)> childrenOf(Map<String, dynamic> raw, String kind) {
-  final out = <(String, String)>[];
-  if (kind == 'multi_storehouse') {
-    for (final item in jsonList(raw['storeHouse'])) {
-      final map = jsonMap(item);
-      final name = str(map['sourceName']).isNotEmpty
-          ? str(map['sourceName'])
-          : str(map['name']);
-      final url = str(map['sourceUrl']).isNotEmpty
-          ? str(map['sourceUrl'])
-          : (str(map['url']).isNotEmpty ? str(map['url']) : str(map['api']));
-      if (url.trim().isNotEmpty) out.add((name, url));
-    }
-  }
-  for (final item in jsonList(raw['urls'])) {
-    final map = jsonMap(item);
-    final name = str(map['name']);
-    final url = str(map['url']).isNotEmpty ? str(map['url']) : str(map['api']);
-    if (url.trim().isNotEmpty) out.add((name, url));
-  }
-  return out;
+  return repositoryEntries(raw).where((entry) => entry.$2.isNotEmpty).toList();
 }
+
+bool subtreeContains(ScanNode node, String url) =>
+    node.url == url ||
+    node.children.any((child) => subtreeContains(child, url));
 
 String gradeSpeed(int totalMs) {
   if (totalMs < 0) return '不可用';
   if (totalMs < 500) return '快';
   if (totalMs < 2000) return '中';
   if (totalMs < 5000) return '慢';
-  return '不可用';
-}
-
-/// 把选中的可用线路打包成可直接导入流光的 `urls` 多仓配置。
-String buildImportConfig(List<ScanNode> nodes, {String? name}) {
-  final urls = <Map<String, String>>[
-    for (final node in nodes)
-      {'name': node.name.trim().isEmpty ? node.url : node.name.trim(), 'url': node.url},
-  ];
-  return jsonEncode({
-    'name': name ?? '线路发现 ${urls.length} 条',
-    'urls': urls,
-  });
+  return '很慢';
 }

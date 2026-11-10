@@ -23,9 +23,10 @@ class _HomePageState extends State<HomePage> {
   String _source = '';
   final _filters = <String, dynamic>{};
   AppController get c => widget.controller;
-  Future<void> _refresh() => _category == null
+  String? get _selectedCategory => _category ?? c.homeCategory;
+  Future<void> _refresh() => _selectedCategory == null
       ? c.refreshHome()
-      : c.loadCategory(_category!, filters: _filters);
+      : c.loadCategory(_selectedCategory!, filters: _filters);
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: c,
@@ -37,9 +38,7 @@ class _HomePageState extends State<HomePage> {
         _filters.clear();
       }
       final page = c.currentPage;
-      final filterRows = jsonList(c.homePage?.filters[_category]);
-      final plugin =
-          c.currentSite?.runtime == 'jar' || c.currentSite?.runtime == 'js';
+      final filterRows = jsonList(c.homePage?.filters[_selectedCategory]);
       return Scaffold(
         appBar: AppBar(
           titleSpacing: 20,
@@ -59,7 +58,9 @@ class _HomePageState extends State<HomePage> {
                         overflow: TextOverflow.ellipsis,
                       ),
                       Text(
-                        c.currentConfig?.name ?? '光影随行 · 自由探索',
+                        c.currentConfig == null
+                            ? '光影随行 · 自由探索'
+                            : c.configName(c.currentConfig),
                         maxLines: 1,
                         style: TextStyle(
                           fontSize: 11,
@@ -79,8 +80,7 @@ class _HomePageState extends State<HomePage> {
               onPressed: () => Navigator.push(
                 context,
                 MaterialPageRoute<void>(
-                  builder: (_) =>
-                      LibraryPage(controller: c, history: true),
+                  builder: (_) => LibraryPage(controller: c, history: true),
                 ),
               ),
               icon: const Icon(Icons.history),
@@ -149,6 +149,26 @@ class _HomePageState extends State<HomePage> {
                   ),
                 ),
               ),
+              if (c.sourceNotice != null)
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                    child: Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.secondaryContainer,
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.swap_horiz_rounded, size: 20),
+                          const SizedBox(width: 8),
+                          Expanded(child: Text(c.sourceNotice!)),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
               if (c.homePage?.categories.isNotEmpty ?? false)
                 SliverToBoxAdapter(
                   child: SizedBox(
@@ -157,26 +177,27 @@ class _HomePageState extends State<HomePage> {
                       scrollDirection: Axis.horizontal,
                       padding: const EdgeInsets.symmetric(horizontal: 16),
                       children: [
-                        Padding(
-                          padding: const EdgeInsets.only(right: 8),
-                          child: ChoiceChip(
-                            label: const Text('推荐'),
-                            selected: _category == null,
-                            onSelected: (_) {
-                              setState(() {
-                                _category = null;
-                                _filters.clear();
-                              });
-                              c.refreshHome();
-                            },
+                        if (c.homeCategory == null)
+                          Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: ChoiceChip(
+                              label: const Text('推荐'),
+                              selected: _category == null,
+                              onSelected: (_) {
+                                setState(() {
+                                  _category = null;
+                                  _filters.clear();
+                                });
+                                c.refreshHome();
+                              },
+                            ),
                           ),
-                        ),
                         for (final category in c.homePage!.categories)
                           Padding(
                             padding: const EdgeInsets.only(right: 8),
                             child: ChoiceChip(
                               label: Text(category.name),
-                              selected: _category == category.id,
+                              selected: _selectedCategory == category.id,
                               onSelected: (_) {
                                 setState(() {
                                   _category = category.id;
@@ -248,51 +269,6 @@ class _HomePageState extends State<HomePage> {
                     ),
                   ),
                 ),
-              if (plugin && !c.pluginsTrusted)
-                SliverToBoxAdapter(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Row(
-                              children: [
-                                Icon(Icons.security_outlined),
-                                SizedBox(width: 8),
-                                Text('此内容源包含可执行插件'),
-                              ],
-                            ),
-                            const SizedBox(height: 8),
-                            const Text(
-                              '只有信任此仓库后才会运行 JAR / JavaScript。信任绑定当前配置内容，更新后可能需要重新确认。',
-                            ),
-                            const SizedBox(height: 10),
-                            FilledButton.tonal(
-                              onPressed: () async {
-                                if (await confirm(
-                                  context,
-                                  '信任当前仓库？',
-                                  '插件可以联网并执行代码。仅在确认订阅可信时继续。',
-                                )) {
-                                  if (context.mounted) {
-                                    await runUi(
-                                      context,
-                                      () => c.trustPlugins(true),
-                                    );
-                                  }
-                                }
-                              },
-                              child: const Text('信任并加载'),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
               if (c.error != null)
                 SliverToBoxAdapter(
                   child: Padding(
@@ -309,8 +285,10 @@ class _HomePageState extends State<HomePage> {
                   hasScrollBody: false,
                   child: Center(
                     child: EmptyState(
-                      title: '把喜欢的内容装进流光',
-                      message: '添加视频订阅，选择一个内容源开始探索。\n添加订阅后，可浏览分类、搜索与观看。',
+                      title: c.loadingBuiltIn ? '正在准备内容' : '把喜欢的内容装进流光',
+                      message: c.loadingBuiltIn
+                          ? '首次打开会自动获取全部子仓，请稍候。'
+                          : '添加视频订阅，选择一个内容源开始探索。\n添加订阅后，可浏览分类、搜索与观看。',
                       icon: Icons.auto_awesome_outlined,
                       actionLabel: '添加订阅',
                       action: widget.onSubscriptions,
@@ -358,7 +336,7 @@ class _HomePageState extends State<HomePage> {
                     }, childCount: page?.items.length ?? 0),
                   ),
                 ),
-              if (_category != null &&
+              if (_selectedCategory != null &&
                   page != null &&
                   page.page < page.pageCount)
                 SliverToBoxAdapter(
@@ -368,7 +346,7 @@ class _HomePageState extends State<HomePage> {
                       onPressed: c.busy
                           ? null
                           : () => c.loadCategory(
-                              _category!,
+                              _selectedCategory!,
                               page: page.page + 1,
                               filters: _filters,
                             ),
