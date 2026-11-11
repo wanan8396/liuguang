@@ -11,10 +11,15 @@
 | 多文件 ES module `import` | 依原引擎与插件实现 | 发布前先 bundle 成单文件 | 发布前先 bundle 成单文件 |
 | HTML / crypto / 代理与 type=1 JSON 解析器 | 原引擎能力 | 跨平台桥接 | 跨平台桥接 |
 | 同步 JS `req` | 原引擎能力 | worker → loopback → 异步 HTTP(S) | worker → loopback → 异步 HTTP(S) |
-| CatVod/JAR、DEX、Android 插件窗口、WebView 网页嗅探 | Android 原生实现 | Android 专属能力不启用 | Android 专属能力不启用 |
+| CatVod/JAR、DEX、Android 插件窗口 | Android 原生实现 | 提取 JAR 内嵌 JS 规则运行；纯 DEX 源明确报 Android 专属 | 提取 JAR 内嵌 JS 规则运行；纯 DEX 源明确报 Android 专属 |
+| 网页嗅探（parse=1 播放页） | WebView 嗅探 | 便携页面嗅探 | 便携页面嗅探 |
 | 相机扫码 | Android 插件 | 当前扫码插件无 Windows 原生实现，可手动输入订阅 | iOS 插件，首次主动扫码时申请相机权限 |
 
 能构建、能启动、能导入配置与真实源能播放是不同层级。不同 JS 方言、插件额外宿主 API、网页认证、媒体编解码和第三方服务仍需分别验收；这里没有把跨平台支持等同于任意 Android 插件兼容。同步 JS 请求使用的回环服务属于应用运行时；CI 仅通过受控 loopback fixture 回归 JS HTTP/HTML/crypto 和生命周期，不启动面向局域网的订阅推送服务。
+
+**网页嗅探：**Windows/iOS 的 `parse=1` 播放页由便携嗅探处理：读取页面里 `<video>/<audio>/<source>`、`og:video` 等声明和播放器脚本中的媒体地址，跳过页面自身 URL，逐个用 Range 请求校验 `Content-Type`、`#EXTM3U`、`<MPD`、`ftyp`、TS 同步字节后才交给播放器，并附带 `Referer` 与源请求头。它不执行页面 JavaScript，也不处理需要登录跳转、加密令牌或复杂 JS 计算的页面；这类仍需 Android WebView 或先转成 JS 源。默认最多检查两级页面、24 个候选。
+
+**JAR 源：**Windows/iOS 没有 DEX 运行时。应用会下载 JAR，检查 `classes.dex`，并提取归档里内嵌的 `spider.js` 或 `spider.json` 规则，再用同一套便携 JS 引擎执行；只含 DEX 的 JAR 会明确提示需要 Android，不会伪装成网络错误。JAR 内的 Java 代码、自定义 `jsapi` 扩展类与 Android 插件窗口仍无法执行。
 
 **执行期限限制：**固定的 Windows QuickJS DLL 与 iOS JavaScriptCore 桥未暴露可靠的原生硬中断。45 秒是宿主请求的等待期限，不是任意 JS 的硬执行上限；纯 JS 同步死循环不保证被 `Isolate.kill` 打断，极端内容源可能需要重启应用。正常请求取消、正常关闭及受控功能回归已通过，但这不代表硬超时、沙箱隔离或所有脚本兼容。
 

@@ -7,7 +7,9 @@ import 'package:xml/xml.dart';
 import '../models/models.dart';
 import '../network/app_http_client.dart';
 import 'source_engine_api.g.dart';
+import 'jar_compat.dart';
 import 'js_source_engine.dart';
+import 'web_sniffer.dart';
 
 class SourceFailure implements Exception {
   const SourceFailure(this.code, this.message, [this.details]);
@@ -40,6 +42,49 @@ class SourceEngine {
       site.runtime == 'jar' || (site.runtime == 'js' && _isAndroid);
 
   bool _isPortableJs(Site site) => site.runtime == 'js' && !_isAndroid;
+
+  /// A JAR cannot run without Android's DEX loader. Some archives ship an
+  /// embedded JavaScript spider, which the portable engine can execute; others
+  /// are reported explicitly instead of failing later as a network error.
+  bool _isPortableJar(Site site) => site.runtime == 'jar' && !_isAndroid;
+
+  final Map<String, Future<Site>> _jarSites = {};
+
+  Future<Site> _portableJarSite(TvConfig config, Site site) {
+    final key = _key(config, site);
+    return _jarSites.putIfAbsent(key, () async {
+      final target = Uri.parse(config.url).resolve(site.jar).toString();
+      final JarInspection inspection;
+      try {
+        inspection = await JarCompat(
+          http,
+        ).inspect(target, SourceEngineHeaders.of(config, site));
+      } on JarInspectError catch (error) {
+        _jarSites.remove(key);
+        throw SourceFailure('jar-unavailable', error.message, target);
+      }
+      final script = inspection.embeddedJs;
+      if (script == null || script.trim().isEmpty) {
+        _jarSites.remove(key);
+        throw SourceFailure(
+          'jar-android-only',
+          inspection.hasDex
+              ? '此 JAR 源需要 Android 运行环境，Windows/iOS 请改用 JS 源'
+              : '此 JAR 没有可移植的 JavaScript 规则，Windows/iOS 请改用 JS 源',
+          target,
+        );
+      }
+      return Site({
+        ...site.raw,
+        'api': 'https://local.invalid/jar/${site.key}.js',
+        '_jsSource': script,
+      });
+    });
+  }
+
+  /// Runs one portable call against a JAR site's embedded script, if any.
+  Future<Site> _jarBackedSite(TvConfig config, Site site) =>
+      _portableJarSite(config, site);
 
   Future<String> _session(TvConfig config, Site site) async {
     if (_disposed) throw const SourceFailure('closed', '源引擎已经关闭');
@@ -112,6 +157,9 @@ class SourceEngine {
 
   Future<VodPage> home(TvConfig config, Site site) async {
     _checkSite(site);
+    if (_isPortableJar(site)) {
+      return home(config, await _jarBackedSite(config, site));
+    }
     if (_isPortableJs(site)) {
       return VodPage.fromJson(await _js.call(config, site, 'home', [true]));
     }
@@ -138,6 +186,15 @@ class SourceEngine {
     Map<String, dynamic> filters = const {},
   }) async {
     _checkSite(site);
+    if (_isPortableJar(site)) {
+      return category(
+        config,
+        await _jarBackedSite(config, site),
+        tid,
+        page: page,
+        filters: filters,
+      );
+    }
     if (_isPortableJs(site)) {
       return VodPage.fromJson(
         await _js.call(config, site, 'category', [tid, page, true, filters]),
@@ -172,6 +229,14 @@ class SourceEngine {
       throw const SourceFailure('not-searchable', '此站点没有声明搜索能力');
     }
     _checkSite(site);
+    if (_isPortableJar(site)) {
+      return search(
+        config,
+        await _jarBackedSite(config, site),
+        keyword,
+        page: page,
+      );
+    }
     if (_isPortableJs(site)) {
       return VodPage.fromJson(
         await _js.call(config, site, 'search', [keyword, false, page]),
@@ -200,6 +265,9 @@ class SourceEngine {
 
   Future<VodDetail> detail(TvConfig config, Site site, String id) async {
     _checkSite(site);
+    if (_isPortableJar(site)) {
+      return detail(config, await _jarBackedSite(config, site), id);
+    }
     final Map<String, dynamic> result;
     if (_isPortableJs(site)) {
       result = await _js.call(config, site, 'detail', [id]);
@@ -222,6 +290,9 @@ class SourceEngine {
     String id,
   ) async {
     _checkSite(site);
+    if (_isPortableJar(site)) {
+      return play(config, await _jarBackedSite(config, site), flag, id);
+    }
     var result = <String, dynamic>{};
     if (_isPortableJs(site)) {
       result = await _js.call(config, site, 'play', [flag, id, config.flags]);
@@ -328,10 +399,26 @@ class SourceEngine {
         /* try the next configured JSON parser */
       }
     }
-    throw const SourceFailure(
-      'unresolved',
-      '此播放地址需要 JSON 解析器；网页嗅探与 JAR 解析器仅在 Android 可用',
-    );
+    // Android JAR parsers cannot run here, but page sniffing is portable: a
+    // parse=1 page URL is opened, its declared or scripted media is verified
+    // and returned with the headers media_kit needs.
+    final page = Uri.tryParse(playback.url);
+    if (page != null &&
+        {'http', 'https'}.contains(page.scheme) &&
+        !_looksLikeMedia(playback.url)) {
+      final hit = await WebSniffer(http).sniff(playback.url, playback.headers);
+      if (hit != null) {
+        _validatePlaybackUrl(hit.url);
+        return Playback.fromJson({
+          'url': hit.url,
+          'parse': 0,
+          'jx': 0,
+          'playUrl': '',
+          'header': hit.headers,
+        });
+      }
+    }
+    throw const SourceFailure('unresolved', '解析器和网页嗅探都没有找到可播放地址；本机不支持 JAR 解析器');
   }
 
   Future<Playback> playLive(
@@ -386,7 +473,9 @@ class SourceEngine {
     if (!_isLoopback(url)) {
       throw const SourceFailure('not-local', '只允许访问当前源的本机代理地址');
     }
-    if (_isPortableJs(site)) return utf8.decode((await http.fetch(url)).bytes);
+    if (_isPortableJs(site) || _isPortableJar(site)) {
+      return utf8.decode((await http.fetch(url)).bytes);
+    }
     return _dispatch(
       config,
       site,
@@ -436,8 +525,10 @@ class SourceEngine {
           'cms': true,
           'remote': true,
           'jar': false,
+          'jarEmbeddedJs': true,
           'js': Platform.isWindows || Platform.isIOS || Platform.isMacOS,
           'jsModules': 'single-file',
+          'sniffer': true,
         };
 
   Future<void> dispose() async {
