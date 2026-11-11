@@ -1,0 +1,23 @@
+name: flutter_js
+description: Pinned flutter_js 0.8.7 desktop/iOS subset for Liuguang.
+version: 0.8.7
+publish_to: none
+homepage: https://github.com/abner/flutter_js
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: '>=3.0.0'
+dependencies:
+  flutter:
+    sdk: flutter
+  ffi: ^2.0.0
+  http: ^1.0.0
+  sync_http: ^0.3.0
+flutter:
+  plugin:
+    platforms:
+      windows:
+        pluginClass: FlutterJsPlugin
+      ios:
+        pluginClass: FlutterJsPlugin
+  assets:
+    - assets/js/

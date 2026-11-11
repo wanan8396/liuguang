@@ -1,7 +1,7 @@
 name: tvbox
 description: 流光 · Flutter 多仓视频播放器
 publish_to: none
-version: 0.1.4+29
+version: 0.1.5+30
 
 environment:
   sdk: '>=3.10.0 <4.0.0'
@@ -35,6 +35,9 @@ dependencies:
   screen_brightness: ^2.1.7
   volume_controller: ^3.4.0
   wakelock_plus: ^1.4.0
+  flutter_js:
+    path: third_party/flutter_js
+  sync_http: ^0.3.1
 
 dev_dependencies:
   flutter_test:
@@ -45,6 +48,9 @@ dev_dependencies:
   pigeon: ^26.1.0
 
 flutter:
+  config:
+    enable-swift-package-manager: false
   uses-material-design: true
   assets:
     - assets/brand/liuguang-mark.png
+    - assets/js/

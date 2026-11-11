@@ -1,4 +1,5 @@
 import 'package:file_selector/file_selector.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:share_plus/share_plus.dart';
@@ -133,7 +134,19 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
     }
   }
 
+  bool get _scannerSupported =>
+      kIsWeb ||
+      {
+        TargetPlatform.android,
+        TargetPlatform.iOS,
+        TargetPlatform.macOS,
+      }.contains(defaultTargetPlatform);
+
+  bool _isRemoteSubscription(String url) =>
+      Uri.tryParse(url)?.host != 'local.invalid';
+
   Future<void> _scan() async {
+    if (!_scannerSupported) return;
     final value = await Navigator.push<String>(
       context,
       MaterialPageRoute(builder: (_) => const ScannerPage()),
@@ -143,21 +156,54 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
     }
   }
 
-  Future<void> _importFile() async => runUi(context, () async {
-    final file = await openFile(
-      acceptedTypeGroups: [
-        const XTypeGroup(
-          label: '订阅配置',
-          extensions: ['json', 'txt'],
-          mimeTypes: ['application/json', 'text/plain'],
-          uniformTypeIdentifiers: ['public.json', 'public.plain-text'],
-        ),
-      ],
-    );
-    if (file != null) {
-      await c.importText(await file.readAsString(), name: file.name);
+  Future<void> _importFile() async {
+    if (_working || c.importing || c.batchImporting) return;
+    setState(() => _working = true);
+    try {
+      await runUi(context, () async {
+        final file = await openFile(
+          acceptedTypeGroups: [
+            const XTypeGroup(
+              label: '订阅配置 / JavaScript 源',
+              extensions: ['json', 'txt', 'js'],
+              mimeTypes: [
+                'application/json',
+                'text/plain',
+                'application/javascript',
+                'text/javascript',
+              ],
+              uniformTypeIdentifiers: [
+                'public.json',
+                'public.plain-text',
+                'com.netscape.javascript-source',
+              ],
+            ),
+          ],
+        );
+        if (file != null) {
+          await c.importText(await file.readAsString(), name: file.name);
+        }
+      });
+    } finally {
+      if (mounted) setState(() => _working = false);
     }
-  });
+  }
+
+  Future<void> _importText() async {
+    if (_working || c.importing || c.batchImporting) return;
+    final text = await showDialog<String>(
+      context: context,
+      builder: (_) => const _ImportTextDialog(),
+    );
+    if (text == null || !mounted) return;
+    setState(() => _working = true);
+    try {
+      await runUi(context, () => c.importText(text));
+    } finally {
+      if (mounted) setState(() => _working = false);
+    }
+  }
+
   Future<void> _share(String url) => runUi(context, () async {
     final box = context.findRenderObject() as RenderBox?;
     await SharePlus.instance.share(
@@ -185,17 +231,24 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
         appBar: AppBar(
           title: Text(widget.live ? '直播订阅' : '订阅管理'),
           actions: [
-            IconButton(
-              tooltip: '扫码填写地址',
-              onPressed: waiting ? null : _scan,
-              icon: const Icon(Icons.qr_code_scanner),
-            ),
-            if (!widget.live)
+            if (_scannerSupported)
+              IconButton(
+                tooltip: '扫码填写地址',
+                onPressed: waiting ? null : _scan,
+                icon: const Icon(Icons.qr_code_scanner),
+              ),
+            if (!widget.live) ...[
+              IconButton(
+                tooltip: '粘贴配置或 JS',
+                onPressed: waiting ? null : _importText,
+                icon: const Icon(Icons.content_paste_outlined),
+              ),
               IconButton(
                 tooltip: '导入本地配置',
                 onPressed: waiting ? null : _importFile,
                 icon: const Icon(Icons.file_open_outlined),
               ),
+            ],
           ],
         ),
         body: ListView(
@@ -226,7 +279,7 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
                       onSubmitted: waiting ? null : (_) => _add(),
                       autocorrect: false,
                       decoration: const InputDecoration(
-                        hintText: '输入一个订阅地址 https://…',
+                        hintText: '输入订阅或 JS 地址 https://…',
                         prefixIcon: Icon(Icons.link),
                       ),
                     ),
@@ -340,7 +393,10 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                 ),
-                if (!widget.live && userSubscriptions.isNotEmpty)
+                if (!widget.live &&
+                    userSubscriptions.any(
+                      (subscription) => _isRemoteSubscription(subscription.url),
+                    ))
                   TextButton.icon(
                     onPressed: waiting
                         ? null
@@ -349,7 +405,7 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
                             () => c.importSubscriptions(
                               userSubscriptions
                                   .map((item) => item.url)
-                                  .where((url) => url.startsWith('http')),
+                                  .where(_isRemoteSubscription),
                             ),
                           ),
                     icon: const Icon(Icons.sync_rounded, size: 18),
@@ -429,7 +485,9 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
                           child: Row(
                             children: [
                               TextButton.icon(
-                                onPressed: waiting
+                                onPressed:
+                                    waiting ||
+                                        !_isRemoteSubscription(subscription.url)
                                     ? null
                                     : () => runUi(
                                         context,
@@ -438,7 +496,11 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
                                         ),
                                       ),
                                 icon: const Icon(Icons.refresh),
-                                label: const Text('更新'),
+                                label: Text(
+                                  _isRemoteSubscription(subscription.url)
+                                      ? '更新'
+                                      : '本地导入',
+                                ),
                               ),
                               IconButton(
                                 tooltip: '重命名订阅',
@@ -497,6 +559,58 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
               showMessage(context, '已选择 ${c.configName(node.config)}');
             }
           }),
+  );
+}
+
+class _ImportTextDialog extends StatefulWidget {
+  const _ImportTextDialog();
+
+  @override
+  State<_ImportTextDialog> createState() => _ImportTextDialogState();
+}
+
+class _ImportTextDialogState extends State<_ImportTextDialog> {
+  final _input = TextEditingController();
+
+  @override
+  void dispose() {
+    _input.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    icon: const Icon(Icons.code_rounded),
+    title: const Text('粘贴配置或 JavaScript 源'),
+    content: SizedBox(
+      width: 560,
+      child: TextField(
+        controller: _input,
+        autofocus: true,
+        minLines: 6,
+        maxLines: 12,
+        keyboardType: TextInputType.multiline,
+        autocorrect: false,
+        enableSuggestions: false,
+        decoration: const InputDecoration(
+          hintText: '粘贴 JSON / JSON5 配置或完整 JS 规则源码',
+          border: OutlineInputBorder(),
+        ),
+        onChanged: (_) => setState(() {}),
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('取消'),
+      ),
+      FilledButton(
+        onPressed: _input.text.trim().isEmpty
+            ? null
+            : () => Navigator.pop(context, _input.text),
+        child: const Text('导入'),
+      ),
+    ],
   );
 }
 

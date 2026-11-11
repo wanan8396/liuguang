@@ -32,7 +32,7 @@ class Site {
       ? 'cms'
       : api.startsWith('csp_')
       ? 'jar'
-      : api.contains('.js')
+      : api.contains('.js') || str(raw['_jsSource']).trim().isNotEmpty
       ? 'js'
       : api.contains('.py')
       ? 'python'

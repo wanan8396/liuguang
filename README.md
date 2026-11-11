@@ -1,20 +1,21 @@
 # 流光 Liuguang
 
-Flutter Android 多仓视频播放器。首页／电视／我的三栏，包含订阅管理、搜索、选集播放、直播节目单、收藏历史、扫码导入、备份恢复和局域网订阅推送。
+Flutter 多仓视频播放器，提供 Android、Windows x64 与 iOS 15+ 编译入口。首页／电视／我的三栏，包含订阅管理、搜索、选集播放、直播节目单、收藏历史、扫码导入、备份恢复和局域网订阅推送。平台插件能力与签名状态见 [平台说明](<docs/PLATFORMS.md>)。
 
 > 开发中。配置能导入、测试通过、APK 构建成功和真实源能播放是不同的验证层级。当前不能承诺所有第三方插件或外部服务可用。
 
 ## 云端编译与测试
 
-本项目使用 [GitHub Actions](https://github.com/wanan8396/liuguang/actions/workflows/android-ci.yml) 编译与测试，无需在用户电脑上编译。
+本项目使用 GitHub Actions 编译与测试，无需在用户电脑上编译：[Android CI](https://github.com/wanan8396/liuguang/actions/workflows/android-ci.yml)、[Windows / iOS builds](https://github.com/wanan8396/liuguang/actions/workflows/desktop-ios.yml)。
 
 每次推送或 PR 自动运行：
 
 1. Flutter 静态分析与离线单元／组件测试。
 2. Android JVM 回归测试和 ARM64 APK 构建、签名校验、SHA-256。
 3. x86_64 Android 模拟器上的受控 DEX、初始化／关闭、端口冲突测试。
+4. 独立 Windows / iOS 工作流：Windows x64 release 完整 zip（EXE、DLL、MSVC 运行库和 data），以及 macOS runner 上的 iOS arm64 release `--no-codesign` Payload zip，均包含 SHA-256 与构建信息。
 
-运行成功后，从对应 Actions run 的 **Artifacts** 下载 `liuguang-arm64-<commit>`。包内包含 APK、校验值和构建元数据。
+运行成功后，从对应 Actions run 的 **Artifacts** 下载 `liuguang-arm64-<commit>`、`liuguang-windows-x64-<commit>` 或 `liuguang-ios-arm64-unsigned-<commit>`。Windows 包需完整解压，保留全部 DLL/data；iOS 包是未签名编译产物，正式安装或 TestFlight/App Store 分发需 Apple 证书与 provisioning profile 重新签名导出。详见 [构建、安装与签名说明](<docs/PLATFORMS.md>)。
 
 - Android 7.0 / API 24 及以上，ARM64。
 - CI 产物使用临时开发签名，**不是正式发布签名**。不同 runner 的测试包可能无法直接覆盖安装；先导出个人数据，再根据 Android 提示处理签名冲突。

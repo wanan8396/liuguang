@@ -1,3 +1,12 @@
+# 0.1.5
+
+- 增加 Windows x64 和 iOS 15+ 工程与 GitHub Actions release 编译入口：Windows 交付完整 EXE/DLL/data zip，iOS 交付 `--no-codesign` unsigned Payload zip，并附构建信息和 SHA-256；Apple 正式签名与安装流程见 [平台说明](<PLATFORMS.md>)。
+- Windows 使用 QuickJS、iOS 使用系统 JavaScriptCore，支持传统 drpy `rule`、`__JS_SPIDER__`、单文件 `export default` / `__jsEvalReturn`，以及 HTTP、HTML、crypto、本地代理和 type=1 JSON 解析器桥接。多文件模块需预先 bundle；JAR/DEX 和网页嗅探仍由 Android 原生引擎处理。
+- 固定本地 `flutter_js` 0.8.7 Windows/iOS 子集，Android 保留原 Kotlin/QuickJS/JAR 路径，避开上游旧 Android Gradle 依赖。
+- 完善 iOS15 CocoaPods、相机与局域网说明、HTTP 订阅兼容、流光品牌图标和启动页；更新 Windows 品牌元数据及 MSVC runtime 打包。
+
+验证：157 项 Flutter 测试通过，Windows 真实 QuickJS 的受控 HTTP/HTML/crypto、drpy 及取消重开回归通过；新工作流通过 actionlint/ShellCheck，Windows 打包合成正反例及工程/图标静态检查通过。Windows C++ release 与 macOS Xcode/iOS 设备编译以对应 Actions 结果为准，签名分发和真实源设备验收另行完成。
+
 # 0.1.4
 
 - 内置奇奇多仓首次自动展开全部子仓，后续每6小时在后台检查更新；失败保留已有配置，刷新不打断当前播放。

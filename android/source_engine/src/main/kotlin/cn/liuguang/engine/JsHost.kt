@@ -30,7 +30,7 @@ class JsHost(private val session: EngineSession,private val api: String): AutoCl
         com.fongmi.quickjs.Encoding.install(q).get()
         q.setModuleLoader(object: QuickJS.ModuleLoader {
             override fun normalize(base: String?,name: String): String = if(name.startsWith("assets://") || name.startsWith("http")) name else EngineRules.resolve(base?.takeIf { it.isNotBlank() } ?: api,name)
-            override fun load(name: String): String = session.resource(name).toString(Charsets.UTF_8)
+            override fun load(name: String): String = if (name == api && session.site.optString("_jsSource").isNotBlank()) session.site.getString("_jsSource") else session.resource(name).toString(Charsets.UTF_8)
         }).get()
         q.evaluate(session.context.assets.open("engine/host.js").bufferedReader().use { it.readText() },"assets://engine/host.js").get()
         q.evaluateModule("import 'assets://js/lib/crypto-js.js';", "assets://engine/crypto-init.js").get()
@@ -54,7 +54,8 @@ class JsHost(private val session: EngineSession,private val api: String): AutoCl
         }
     }
     fun init(ext: String) {
-        val source=session.resource(api).toString(Charsets.UTF_8)
+        val source=session.site.optString("_jsSource").takeIf { it.isNotBlank() }
+            ?: session.resource(api).toString(Charsets.UTF_8)
         if(source.trimStart().startsWith("//bb")) error("Precompiled JS bytecode is runtime-version-specific; provide source JS")
         // Traditional drpy rules use global `rule`; ES modules export __jsEvalReturn/default.
         if(source.contains("export ") || source.contains("export{")) {

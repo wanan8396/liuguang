@@ -7,6 +7,7 @@ import 'package:xml/xml.dart';
 import '../models/models.dart';
 import '../network/app_http_client.dart';
 import 'source_engine_api.g.dart';
+import 'js_source_engine.dart';
 
 class SourceFailure implements Exception {
   const SourceFailure(this.code, this.message, [this.details]);
@@ -25,6 +26,7 @@ class SourceEngine {
   final AppHttpClient http;
   final SourceEngineApi _native;
   final bool _isAndroid;
+  late final JsSourceEngine _js = JsSourceEngine(http);
   final Map<String, Future<String>> _sessions = {};
   int _sessionGeneration = 0;
   int _requestGeneration = 0;
@@ -34,7 +36,10 @@ class SourceEngine {
   String _key(TvConfig config, Site site) =>
       jsonEncode([config.toJson(), site.toJson()]);
 
-  bool _isNative(Site site) => site.runtime == 'jar' || site.runtime == 'js';
+  bool _isNative(Site site) =>
+      site.runtime == 'jar' || (site.runtime == 'js' && _isAndroid);
+
+  bool _isPortableJs(Site site) => site.runtime == 'js' && !_isAndroid;
 
   Future<String> _session(TvConfig config, Site site) async {
     if (_disposed) throw const SourceFailure('closed', '源引擎已经关闭');
@@ -107,6 +112,9 @@ class SourceEngine {
 
   Future<VodPage> home(TvConfig config, Site site) async {
     _checkSite(site);
+    if (_isPortableJs(site)) {
+      return VodPage.fromJson(await _js.call(config, site, 'home', [true]));
+    }
     if (_isNative(site)) {
       return VodPage.fromJson(
         _parseObject(
@@ -130,6 +138,11 @@ class SourceEngine {
     Map<String, dynamic> filters = const {},
   }) async {
     _checkSite(site);
+    if (_isPortableJs(site)) {
+      return VodPage.fromJson(
+        await _js.call(config, site, 'category', [tid, page, true, filters]),
+      );
+    }
     if (_isNative(site)) {
       return VodPage.fromJson(
         _parseObject(
@@ -159,6 +172,11 @@ class SourceEngine {
       throw const SourceFailure('not-searchable', '此站点没有声明搜索能力');
     }
     _checkSite(site);
+    if (_isPortableJs(site)) {
+      return VodPage.fromJson(
+        await _js.call(config, site, 'search', [keyword, false, page]),
+      );
+    }
     if (_isNative(site)) {
       return VodPage.fromJson(
         _parseObject(
@@ -183,7 +201,9 @@ class SourceEngine {
   Future<VodDetail> detail(TvConfig config, Site site, String id) async {
     _checkSite(site);
     final Map<String, dynamic> result;
-    if (_isNative(site)) {
+    if (_isPortableJs(site)) {
+      result = await _js.call(config, site, 'detail', [id]);
+    } else if (_isNative(site)) {
       result = _parseObject(
         await _dispatch(config, site, (session) => _native.detail(session, id)),
       );
@@ -203,7 +223,9 @@ class SourceEngine {
   ) async {
     _checkSite(site);
     var result = <String, dynamic>{};
-    if (_isNative(site)) {
+    if (_isPortableJs(site)) {
+      result = await _js.call(config, site, 'play', [flag, id, config.flags]);
+    } else if (_isNative(site)) {
       result = _parseObject(
         await _dispatch(
           config,
@@ -232,6 +254,9 @@ class SourceEngine {
         // when the source already returned a direct media URL (parse=0).
         (_isAndroid &&
             {'http', 'https'}.contains(Uri.tryParse(playback.url)?.scheme));
+    if (requiresResolution && !_isAndroid) {
+      return _resolvePortable(config, result);
+    }
     if (requiresResolution) {
       final resolved = _parseObject(
         await _dispatch(
@@ -253,6 +278,60 @@ class SourceEngine {
     }
     _validatePlaybackUrl(playback.url);
     return playback;
+  }
+
+  Future<Playback> _resolvePortable(
+    TvConfig config,
+    Map<String, dynamic> raw,
+  ) async {
+    final result = Map<String, dynamic>.of(raw);
+    if (result['url'] is List) {
+      final urls = jsonList(
+        result['url'],
+      ).map(str).where((v) => v.startsWith('http')).toList();
+      if (urls.isNotEmpty) result['url'] = urls.first;
+    }
+    var playback = Playback.fromJson(result);
+    // A local JS proxy is already a playable source; media_kit sends its headers.
+    if (!playback.parse &&
+        intValue(result['jx']) == 0 &&
+        str(result['playUrl']).isEmpty) {
+      _validatePlaybackUrl(playback.url);
+      return playback;
+    }
+    final candidates = <String>[
+      if (str(result['playUrl']).isNotEmpty)
+        '${result['playUrl']}${playback.url}',
+      for (final parser in config.parses)
+        if (intValue(parser['type']) == 1 && str(parser['url']).isNotEmpty)
+          '${parser['url']}${playback.url}',
+    ];
+    for (final candidate in candidates) {
+      try {
+        final parsed = jsonMap(
+          jsonDecode(
+            utf8.decode(
+              (await http.fetch(candidate, headers: playback.headers)).bytes,
+            ),
+          ),
+        );
+        final data = parsed['data'] is Map ? jsonMap(parsed['data']) : parsed;
+        if (str(data['url']).isEmpty) continue;
+        playback = Playback.fromJson({
+          ...data,
+          'parse': 0,
+          'header': data['header'] ?? playback.headers,
+        });
+        _validatePlaybackUrl(playback.url);
+        return playback;
+      } catch (_) {
+        /* try the next configured JSON parser */
+      }
+    }
+    throw const SourceFailure(
+      'unresolved',
+      '此播放地址需要 JSON 解析器；网页嗅探与 JAR 解析器仅在 Android 可用',
+    );
   }
 
   Future<Playback> playLive(
@@ -307,6 +386,7 @@ class SourceEngine {
     if (!_isLoopback(url)) {
       throw const SourceFailure('not-local', '只允许访问当前源的本机代理地址');
     }
+    if (_isPortableJs(site)) return utf8.decode((await http.fetch(url)).bytes);
     return _dispatch(
       config,
       site,
@@ -318,6 +398,7 @@ class SourceEngine {
     _requestGeneration++;
     _sessionGeneration++;
     final sessions = List<Future<String>>.of(_sessions.values);
+    await _js.closeSessions();
     await Future.wait(
       sessions.map((future) async {
         try {
@@ -335,6 +416,7 @@ class SourceEngine {
     _sessionGeneration++;
     final sessions = List<Future<String>>.of(_sessions.values);
     _sessions.clear();
+    await _js.closeSessions();
     await Future.wait(
       sessions.map((future) async {
         try {
@@ -354,12 +436,14 @@ class SourceEngine {
           'cms': true,
           'remote': true,
           'jar': false,
-          'js': false,
+          'js': Platform.isWindows || Platform.isIOS || Platform.isMacOS,
+          'jsModules': 'single-file',
         };
 
   Future<void> dispose() async {
     _disposed = true;
     await closeSessions();
+    await _js.dispose();
   }
 
   void _checkSite(Site site) {

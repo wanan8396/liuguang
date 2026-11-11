@@ -34,6 +34,16 @@ Source project: https://github.com/FongMi/QuickJS (MIT, with separately preserve
 
 Imported JS engine/libraries and host adapter source are included as editable assets. Preserve their notices and LGPL replacement/source obligations when distributing modifications.
 
+## Portable Windows/iOS JavaScript runtime
+
+- Upstream package: [flutter_js 0.8.7](https://pub.dev/packages/flutter_js/versions/0.8.7), [source project](https://github.com/abner/flutter_js).
+- Fixed local subset: [package manifest](<../third_party/flutter_js/pubspec.yaml>), [patch/provenance note](<../third_party/flutter_js/LIUGUANG-PATCHES.md>), [MIT license](<../third_party/flutter_js/LICENSE>). Only the upstream Dart/assets and Windows/iOS platform files are retained; Android/macOS/Linux plugin declarations and Android Gradle dependencies are omitted. The retained upstream runtime implementation is unchanged; application bridging is maintained in this project.
+- Windows uses the upstream x64 [QuickJS bridge DLL](<../third_party/flutter_js/windows/shared/quickjs_c_bridge.dll>), SHA-256 `e2051274a1d7599d131d45b96c7cc53519a9009bf43a802b922f73031d3d3b4b`. Its CMake rule installs it into the complete release bundle. The fixed package version and checked-in binary establish artifact identity, not proof of a reproducible build from an exact underlying QuickJS source revision.
+- iOS uses Apple's system JavaScriptCore through [the native podspec](<../third_party/flutter_js/ios/flutter_js.podspec>); it does not ship the Android QuickJS libraries. macOS-hosted CI tests exercise the system JavaScriptCore FFI runtime, while the iOS application is separately compiled with Xcode.
+- Android continues using the original Kotlin/JAR/QuickJS implementation described above; adding this subset does not replace its native engine or add the old upstream Flutter Android plugin.
+- JS requests run in dedicated worker isolates; synchronous `req` bridges to asynchronous HTTP(S) via loopback. Timeouts/cancellation dispose workers. This is runtime lifecycle management, not process isolation for untrusted code.
+- The per-release Windows/iOS packages include the upstream MIT text as `flutter_js-LICENSE.txt`, alongside this project's license and third-party notices.
+
 ## Media and build dependencies
 
 Flutter packages are recorded in `pubspec.lock`. media_kit's Dart wrapper is MIT; its libmpv/FFmpeg binaries have additional licenses and source/relinking requirements. Their build provenance is provided by:
@@ -43,4 +53,4 @@ Flutter packages are recorded in `pubspec.lock`. media_kit's Dart wrapper is MIT
 
 Android dependencies are explicit in the Gradle module. OkHttp must be the **Android** variant; a JVM-only artifact does not carry Android platform adapters.
 
-GitHub Actions are pinned to commit hashes. CI uses no account credentials and only creates development-signed APK artifacts, not a production release.
+GitHub Actions are pinned to commit hashes. CI uses no account credentials and produces development-signed Android APKs, unsigned Windows x64 bundles and unsigned iOS arm64 Payload archives, not a signed production release. Windows packaging includes the release MSVC runtime via CMake's `InstallRequiredSystemLibraries`; those Microsoft DLLs retain their applicable Visual Studio redistribution terms. iOS uses CocoaPods with an iOS 15 deployment target and Flutter SwiftPM integration disabled for the current podspec-based plugins. Xcode/CocoaPods follow the hosted runner image; each run records their versions and uploads the resolved pod lockfiles. Native build/download provenance and signing requirements are detailed in the [platform guide](<PLATFORMS.md>).

@@ -5,6 +5,7 @@ import 'package:crypto/crypto.dart';
 import '../models/models.dart';
 import '../network/app_http_client.dart';
 import 'config_decoder.dart';
+import 'js_rule_import.dart';
 
 class SubscriptionRepository {
   SubscriptionRepository(
@@ -112,6 +113,7 @@ class SubscriptionRepository {
         RepoNode(url: url, name: name, parentUrl: parent, status: 'loading'),
       );
       if (state.generation != _generation) return;
+      final localContent = content != null;
       if (content == null) {
         final response = await client.fetch(url);
         content = response.bytes;
@@ -124,7 +126,39 @@ class SubscriptionRepository {
         return;
       }
       final warnings = <String>[];
-      final raw = decoder.decode(content, onWarning: warnings.add);
+      Map<String, dynamic> raw;
+      var displayName = name;
+      try {
+        // JSON/JSON5 always wins, even when a subscription URL ends in .js or
+        // strings inside the config happen to contain JavaScript markers.
+        raw = decoder.decode(content, onWarning: warnings.add);
+      } on ConfigDecodeException {
+        if (content.length > decoder.maxDecodedBytes) rethrow;
+        var source = decodeConfigText(content, onWarning: warnings.add);
+        // Dart's UTF8 decoder consumes the BOM; preserve it in the embedded
+        // source while the rule recognizer ignores it for detection.
+        if (content.length >= 3 &&
+            content[0] == 0xef &&
+            content[1] == 0xbb &&
+            content[2] == 0xbf) {
+          source = '\ufeff$source';
+        }
+        final rule = JsRuleImport.tryParse(
+          source,
+          fromJsFile:
+              isJsRuleUrl(finalUrl) ||
+              isJsRuleUrl(url) ||
+              (localContent && isJsRuleUrl(name)),
+        );
+        if (rule == null) rethrow;
+        displayName = rule.title ?? jsRuleName(name, finalUrl);
+        raw = rule.toConfig(
+          api: localContent
+              ? Uri.parse(finalUrl).resolve('rule.js').toString()
+              : finalUrl,
+          name: displayName,
+        );
+      }
       final resolvedRaw = resolveConfigResources(raw, finalUrl);
       final digest = sha256
           .convert(utf8.encode(jsonEncode(_canonical(resolvedRaw))))
@@ -147,7 +181,7 @@ class SubscriptionRepository {
       state.seenUrls[finalNormalized] = finalUrl;
       final isConfig = raw['sites'] is List || raw['lives'] is List;
       final config = isConfig
-          ? TvConfig(url: finalUrl, name: name, raw: resolvedRaw)
+          ? TvConfig(url: finalUrl, name: displayName, raw: resolvedRaw)
           : null;
       final children = <dynamic>[
         if (raw['urls'] is List) ...raw['urls'] as List,
@@ -160,7 +194,7 @@ class SubscriptionRepository {
       state.add(
         RepoNode(
           url: finalUrl,
-          name: name,
+          name: displayName,
           parentUrl: parent,
           status: config == null
               ? 'repository'

@@ -29,7 +29,7 @@ open class EngineSession(val context: Context, val config: JSONObject, val site:
         preparePluginDirs()
         val api = site.optString("api")
         val type = site.optInt("type", 0)
-        val jsApi = api.substringBefore('?').endsWith(".js", true) || site.optString("engine")=="js"
+        val jsApi = api.substringBefore('?').endsWith(".js", true) || site.optString("engine")=="js" || site.optString("_jsSource").isNotBlank()
         if (type != 3 && !api.startsWith("csp_") && !jsApi) return
         if (jsApi) { js = JsHost(this, EngineRules.resolve(base,api)); js!!.init(ext()); return }
         val jar = site.optString("jar").ifBlank { raw.optString("spider") }

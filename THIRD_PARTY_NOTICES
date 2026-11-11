@@ -41,7 +41,24 @@ Matched QuickJS runtime
   unverified; artifact matching is by the TV commit and hashes, not an invented
   QuickJS revision. QuickJS repository license was retrieved at
   c9e232b4020fa68b6da6fdfc6a536b844f0d6165; that is NOT a build provenance claim.
-  No x86/x86_64 JS support is claimed.
+  No Android x86/x86_64 JS support is claimed; the separate Windows engine below
+  supplies Windows x64 JavaScript execution.
+
+Windows / iOS JavaScript runtime
+  flutter_js 0.8.7: https://github.com/abner/flutter_js
+  Copyright (c) 2019 Ábner Oliveira; MIT, full text third_party/flutter_js/LICENSE.
+  Retained lib/assets/Windows/iOS sources are a pinned subset of the pub.dev
+  0.8.7 archive; Android registration is omitted to keep the matched engine above.
+  Windows includes the unchanged upstream quickjs_c_bridge.dll (x64), SHA256
+  e2051274a1d7599d131d45b96c7cc53519a9009bf43a802b922f73031d3d3b4b.
+  Exact C bridge build provenance is not supplied by this package; the hash pins
+  the published artifact, not an invented native source revision.
+  iOS uses Apple's system JavaScriptCore. New application bridges are in
+  lib/core/engine/js_source_engine.dart, js_worker.dart and assets/js/host.js.
+  assets/js/drpy.bundle.js is generated from the existing drpy source below;
+  tool/build_drpy.mjs records the esbuild 0.25.10 bundling recipe. Bundle-only
+  changes expose namespace exports and CryptoJS/JSEncrypt globals for both
+  engines. Original upstream source and notices remain in Android assets.
 
 Traditional drpy
   https://github.com/hjdhnx/dr_py
