@@ -486,6 +486,7 @@ class SourceEngine {
   Future<void> cancel() async {
     _requestGeneration++;
     _sessionGeneration++;
+    _jarSites.clear();
     final sessions = List<Future<String>>.of(_sessions.values);
     await _js.closeSessions();
     await Future.wait(
@@ -503,6 +504,7 @@ class SourceEngine {
   Future<void> closeSessions() async {
     _requestGeneration++;
     _sessionGeneration++;
+    _jarSites.clear();
     final sessions = List<Future<String>>.of(_sessions.values);
     _sessions.clear();
     await _js.closeSessions();
