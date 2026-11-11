@@ -67,9 +67,13 @@ void main() {
         'api': '$base/source.js',
         '_jsSource':
             '''
+// export default example -- comments must remain untouched.
 export default {
   init(){local.set('test','key','已初始化');},
   home(){
+    let recovered=false;
+    try { req('file:///fixture-network-error'); } catch(error) { recovered=true; }
+    if(!recovered) throw Error('JS network fallback failed');
     const value = req('$base/redirect');
     if(value.code!==200 || !value.url.endsWith('/data')) throw Error('redirect failed');
     if(local.get('test','key')!=='已初始化') throw Error('local failed');

@@ -8,6 +8,8 @@ import 'package:flutter_js/javascript_runtime.dart';
 import 'package:flutter_js/quickjs/quickjs_runtime2.dart';
 import 'package:sync_http/sync_http.dart';
 
+import 'js_module_source.dart';
+
 /// One runtime per isolate also isolates JavaScriptCore's static callback slot.
 /// No Flutter platform channels or asset loads occur inside this worker.
 void runJsWorker(Map<String, dynamic> start) async {
@@ -28,16 +30,19 @@ void runJsWorker(Map<String, dynamic> start) async {
     js.onMessage('req', (dynamic args) {
       // Only loopback IPC is synchronous. HTTPS/redirects and response bounds
       // live in the asynchronous host, so the Flutter UI never blocks.
-      final request = SyncHttpClient.postUrl(Uri.parse(start['requestUrl']));
-      request.headers.contentType = ContentType.json;
-      request.write(jsonEncode(args));
-      final response = request.close();
-      if (response.statusCode != 200) {
-        throw StateError('JS HTTP bridge: ${response.body}');
+      // Never throw across the JSC FFI callback: JS unwraps this envelope.
+      try {
+        final request = SyncHttpClient.postUrl(Uri.parse(start['requestUrl']));
+        request.headers.contentType = ContentType.json;
+        request.write(jsonEncode(args));
+        final response = request.close();
+        if (response.statusCode != 200) {
+          return jsonEncode({'error': 'JS HTTP bridge: ${response.body}'});
+        }
+        return response.body ?? jsonEncode({'error': 'Empty JS HTTP response'});
+      } catch (error) {
+        return jsonEncode({'error': error.toString()});
       }
-      final envelope = jsonDecode(response.body ?? '{}') as Map;
-      if (envelope['error'] != null) throw StateError('${envelope['error']}');
-      return jsonEncode(envelope['result']);
     });
     final local = <String, String>{};
     js.onMessage('local', (dynamic args) {
@@ -64,22 +69,7 @@ void runJsWorker(Map<String, dynamic> start) async {
     js.onMessage('proxy', (_) => start['proxyUrl']);
     evaluate(start['host'] as String);
     evaluate('${start['bundle']}\n;null;');
-    var source = start['source'] as String;
-    if (RegExp(r'^\s*import\s', multiLine: true).hasMatch(source)) {
-      throw const FormatException('此平台需要单文件 JS；请先合并 import 依赖');
-    }
-    // Traditional global drpy rules and single-file CatVod module exports.
-    source = source.replaceFirst(
-      RegExp(r'\bexport\s+default\s+'),
-      'globalThis.__lgDefault = ',
-    );
-    source = source.replaceAll(
-      RegExp(
-        r'\bexport\s+(?=(?:async\s+)?function\b|const\b|let\b|var\b|class\b)',
-      ),
-      '',
-    );
-    source = source.replaceAll(RegExp(r'\bexport\s*\{[^}]*\}\s*;?'), '');
+    final source = prepareSingleFileJs(start['source'] as String);
     evaluate('''$source
 ;globalThis.__ruleMode = typeof rule !== 'undefined';
 globalThis.__spider = typeof __JS_SPIDER__ !== 'undefined' ? __JS_SPIDER__ :

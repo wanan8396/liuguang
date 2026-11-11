@@ -65,7 +65,7 @@ liuguang-windows-x64/
 ```powershell
 flutter config --enable-windows-desktop
 flutter pub get --enforce-lockfile
-flutter build windows --release --target-platform windows-x64 --no-pub
+flutter build windows --release --no-pub
 ./.github/scripts/package-windows.ps1
 ```
 

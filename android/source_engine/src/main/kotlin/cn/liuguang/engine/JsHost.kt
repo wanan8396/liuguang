@@ -63,7 +63,7 @@ class JsHost(private val session: EngineSession,private val api: String): AutoCl
             q.evaluateModule("import * as m from ${JSONObject.quote(api)}; globalThis.__spider=globalThis.__JS_SPIDER__||(m.__jsEvalReturn?m.__jsEvalReturn():(typeof m.default==='function'?m.default():m.default));",api+"#entry").get()
         } else {
             q.evaluate(source,api).get()
-            q.evaluateModule("import drpy from 'assets://drpy/libs/drpy2.js'; globalThis.__spider=typeof __JS_SPIDER__!=='undefined'?__JS_SPIDER__:drpy; globalThis.__ruleMode=typeof rule!=='undefined';",api+"#rule").get()
+            q.evaluateModule("import drpy from 'assets://drpy/libs/drpy2.js'; globalThis.__spider=typeof __JS_SPIDER__!=='undefined'?__JS_SPIDER__:(typeof __jsEvalReturn==='function'?__jsEvalReturn():drpy); globalThis.__ruleMode=typeof rule!=='undefined';",api+"#rule").get()
         }
         q.evaluate("if(!globalThis.__spider) throw Error('No drpy rule or spider module export');").get()
         val argument=runCatching { JSONObject(ext); ext }.getOrElse { JSONObject.quote(ext) }

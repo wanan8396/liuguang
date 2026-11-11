@@ -177,6 +177,10 @@ class _JsSession {
         onError: session._messages.sendPort,
         onExit: session._messages.sendPort,
       );
+      if (session._closed) {
+        session._isolate?.kill(priority: Isolate.immediate);
+        throw const SourceFailure('cancelled', 'JS 初始化已取消');
+      }
       session._commands = await session._ready.future.timeout(
         const Duration(seconds: 45),
       );

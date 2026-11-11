@@ -56,7 +56,7 @@ jobs:
             Remove-Item -LiteralPath $bridge -Force
           }
       - name: Build complete Windows release
-        run: flutter build windows --release --target-platform windows-x64 --no-pub
+        run: flutter build windows --release --no-pub
       - name: Package executable, plugin DLLs, runtime and data
         run: ./.github/scripts/package-windows.ps1
       - name: Upload Windows bundle

@@ -4,7 +4,11 @@
 const __host = (name, args) => sendMessage(name, JSON.stringify(args));
 globalThis.console = {log(){}, warn(){}, error(){}, debug(){}};
 globalThis.print = globalThis.log = console.log;
-globalThis.req = (url, options={}) => JSON.parse(__host('req', [String(url), options || {}]));
+globalThis.req = (url, options={}) => {
+  const envelope = JSON.parse(__host('req', [String(url), options || {}]));
+  if (envelope.error != null) throw Error(String(envelope.error));
+  return envelope.result;
+};
 globalThis.request = (url, options={}) => req(url, options).content;
 globalThis.http = globalThis.req;
 globalThis.local = {
