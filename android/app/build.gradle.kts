@@ -1,8 +1,33 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
+
+// Release signing is supplied outside the repository: `android/key.properties`
+// locally, or LIUGUANG_* environment variables in CI. Without either, the build
+// stays debug-signed so `flutter run --release` keeps working.
+val signingProperties = Properties().apply {
+    val file = rootProject.file("key.properties")
+    if (file.isFile) file.inputStream().use { load(it) }
+}
+
+fun signingValue(key: String, environment: String): String? =
+    (signingProperties.getProperty(key)?.takeIf { it.isNotBlank() })
+        ?: System.getenv(environment)?.takeIf { it.isNotBlank() }
+
+val releaseStorePath = signingValue("storeFile", "LIUGUANG_KEYSTORE")
+val releaseStorePassword = signingValue("storePassword", "LIUGUANG_STORE_PASSWORD")
+val releaseKeyAlias = signingValue("keyAlias", "LIUGUANG_KEY_ALIAS")
+val releaseKeyPassword = signingValue("keyPassword", "LIUGUANG_KEY_PASSWORD")
+val hasReleaseSigning = listOf(
+    releaseStorePath,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+).all { it != null }
 
 android {
     namespace = "cn.liuguang.tvbox"
@@ -30,11 +55,25 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(releaseStorePath!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (hasReleaseSigning) {
+                signingConfigs.getByName("release")
+            } else {
+                // Keep local `flutter run --release` usable without a keystore.
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }

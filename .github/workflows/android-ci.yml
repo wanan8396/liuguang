@@ -84,18 +84,51 @@ jobs:
       - name: Native JVM regression tests
         working-directory: android
         run: ./gradlew :source_engine:testDebugUnitTest --no-daemon --max-workers=2 --console=plain
-      - name: Build development-signed ARM64 APK
+      - name: Restore release signing material
+        env:
+          KEYSTORE_BASE64: ${{ secrets.LIUGUANG_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.LIUGUANG_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.LIUGUANG_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.LIUGUANG_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEYSTORE_BASE64}" ] || [ -z "${STORE_PASSWORD}" ] || [ -z "${KEY_ALIAS}" ] || [ -z "${KEY_PASSWORD}" ]; then
+            printf 'Release signing secrets are not configured; the APK will be debug-signed.\n' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          umask 077
+          printf '%s' "${KEYSTORE_BASE64}" | base64 -d > "$RUNNER_TEMP/liuguang-release.jks"
+          {
+            printf 'storeFile=%s\n' "$RUNNER_TEMP/liuguang-release.jks"
+            printf 'storePassword=%s\n' "${STORE_PASSWORD}"
+            printf 'keyAlias=%s\n' "${KEY_ALIAS}"
+            printf 'keyPassword=%s\n' "${KEY_PASSWORD}"
+          } > android/key.properties
+          echo "LIUGUANG_SIGNED=1" >> "$GITHUB_ENV"
+      - name: Build release ARM64 APK
         run: flutter build apk --release --split-per-abi --target-platform android-arm64
       - name: Verify dynamic-plugin ABI in final minified APK
         run: python3 -I .github/scripts/check-plugin-abi.py build/app/outputs/flutter-apk/app-arm64-v8a-release.apk --report artifacts/apk/plugin-abi.json
-      - name: Verify APK and record digest
+      - name: Verify APK signature and record digest
         run: |
+          set -euo pipefail
           mkdir -p artifacts/apk
           cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk artifacts/apk/liuguang-arm64.apk
-          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs artifacts/apk/liuguang-arm64.apk > artifacts/apk/signature.txt
+          apksigner="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          "$apksigner" verify --verbose --print-certs artifacts/apk/liuguang-arm64.apk > artifacts/apk/signature.txt
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging artifacts/apk/liuguang-arm64.apk > artifacts/apk/package.txt
           (cd artifacts/apk && sha256sum liuguang-arm64.apk > SHA256SUMS.txt)
-          printf 'commit=%s\nsigning=development-only\nreal-source-playback=not-tested\n' "$GITHUB_SHA" > artifacts/apk/BUILD.txt
+          if [ "${LIUGUANG_SIGNED:-0}" = "1" ]; then
+            if grep -q 'CN=Android Debug' artifacts/apk/signature.txt; then
+              echo 'Release keystore was configured but the APK is debug-signed' >&2
+              exit 1
+            fi
+            signing='release-keystore'
+          else
+            signing='development-only'
+          fi
+          printf 'commit=%s\nsigning=%s\nreal-source-playback=not-tested\n' "$GITHUB_SHA" "$signing" > artifacts/apk/BUILD.txt
+          printf 'signing=%s\n' "$signing" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Upload ARM64 APK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
