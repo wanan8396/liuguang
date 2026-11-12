@@ -9,7 +9,6 @@ import 'package:share_plus/share_plus.dart';
 import '../../core/app_controller.dart';
 import '../../ui/components.dart';
 import '../../ui/brand_icon.dart';
-import 'engine_bridge_page.dart';
 import 'library_page.dart';
 import 'pairing_page.dart';
 import 'source_management_page.dart';
@@ -132,15 +131,6 @@ class ProfilePage extends StatelessWidget {
                   '数据推送',
                   '临时局域网配对 · 本机确认',
                   () => _push(context, PairingPage(controller: controller)),
-                ),
-                const Divider(indent: 56, height: 1),
-                _tile(
-                  context,
-                  Icons.hub_outlined,
-                  'Android 原生引擎',
-                  '同网桥接 · DEX / JAR 在 Android 执行',
-                  () =>
-                      _push(context, EngineBridgePage(controller: controller)),
                 ),
               ],
             ),

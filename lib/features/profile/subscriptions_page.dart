@@ -119,28 +119,19 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
   }
 
   Future<void> _clearOld() async {
-    final urls = c.subscriptions
-        .map((s) => s.url)
-        .where((url) => url != defaultSubscription)
-        .toList();
+    final urls = c.subscriptions.map((s) => s.url).toList();
     if (urls.isEmpty) return;
     if (await confirm(
           context,
           '清理 ${urls.length} 个旧订阅？',
-          '保留内置奇奇多仓，移除其他订阅。收藏和观看历史保留。',
+          '移除已添加的全部订阅。收藏和观看历史保留。',
         ) &&
         mounted) {
       await runUi(context, () => c.removeSubscriptions(urls));
     }
   }
 
-  bool get _scannerSupported =>
-      kIsWeb ||
-      {
-        TargetPlatform.android,
-        TargetPlatform.iOS,
-        TargetPlatform.macOS,
-      }.contains(defaultTargetPlatform);
+  bool get _scannerSupported => defaultTargetPlatform == TargetPlatform.android;
 
   bool _isRemoteSubscription(String url) =>
       Uri.tryParse(url)?.host != 'local.invalid';
@@ -220,9 +211,7 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
     listenable: c,
     builder: (context, _) {
       final waiting = _working || c.importing || c.batchImporting;
-      final userSubscriptions = c.subscriptions
-          .where((s) => s.url != defaultSubscription)
-          .toList();
+      final userSubscriptions = c.subscriptions.toList();
       final pageError = widget.live ? c.liveError : c.importError;
       final liveUrls = jsonList(
         c.store.setting('liveSubscriptions'),
@@ -375,8 +364,7 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
               ),
             ],
             const SizedBox(height: 20),
-            if (!widget.live &&
-                c.subscriptions.any((s) => s.url != defaultSubscription))
+            if (!widget.live && c.subscriptions.isNotEmpty)
               Align(
                 alignment: Alignment.centerRight,
                 child: TextButton.icon(

@@ -285,10 +285,8 @@ class _HomePageState extends State<HomePage> {
                   hasScrollBody: false,
                   child: Center(
                     child: EmptyState(
-                      title: c.loadingBuiltIn ? '正在准备内容' : '把喜欢的内容装进流光',
-                      message: c.loadingBuiltIn
-                          ? '首次打开会自动获取全部子仓，请稍候。'
-                          : '添加视频订阅，选择一个内容源开始探索。\n添加订阅后，可浏览分类、搜索与观看。',
+                      title: '把喜欢的内容装进流光',
+                      message: '添加视频订阅，选择一个内容源开始探索。\n添加订阅后，可浏览分类、搜索与观看。',
                       icon: Icons.auto_awesome_outlined,
                       actionLabel: '添加订阅',
                       action: widget.onSubscriptions,

@@ -1,6 +1,5 @@
 import 'dart:io';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -13,37 +12,17 @@ import '../config/config_test.dart' show Adapter;
 import '../controller/app_controller_test.dart' show MemorySecrets, TestEngine;
 
 void main() {
-  testWidgets('Windows hides scanner and keeps file/text import actions', (
-    tester,
-  ) async {
-    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
-    addTearDown(() => debugDefaultTargetPlatformOverride = null);
-    final controller = AppController();
-    await tester.pumpWidget(
-      MaterialApp(home: SubscriptionsPage(controller: controller)),
-    );
-    expect(find.byTooltip('扫码填写地址'), findsNothing);
-    expect(find.byType(ScannerPage), findsNothing);
-    expect(find.byTooltip('粘贴配置或 JS'), findsOneWidget);
-    expect(find.byTooltip('导入本地配置'), findsOneWidget);
-    await tester.pumpWidget(const SizedBox());
-    await controller.disposeAsync();
-    debugDefaultTargetPlatformOverride = null;
-  });
-
-  testWidgets('iOS retains scanner and JS import actions', (tester) async {
-    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
-    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+  testWidgets('scanner and JS import actions are available', (tester) async {
     final controller = AppController();
     await tester.pumpWidget(
       MaterialApp(home: SubscriptionsPage(controller: controller)),
     );
     expect(find.byTooltip('扫码填写地址'), findsOneWidget);
     expect(find.byTooltip('粘贴配置或 JS'), findsOneWidget);
+    expect(find.byTooltip('导入本地配置'), findsOneWidget);
     expect(find.byType(ScannerPage), findsNothing);
     await tester.pumpWidget(const SizedBox());
     await controller.disposeAsync();
-    debugDefaultTargetPlatformOverride = null;
   });
 
   testWidgets('file selector accepts JavaScript alongside existing JSON/text', (

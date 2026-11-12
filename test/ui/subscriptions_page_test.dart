@@ -42,8 +42,6 @@ void main() {
     );
     final field = find.byType(TextField);
     expect(find.byTooltip('全网发现线路'), findsNothing);
-    expect(find.text('内置 · 奇奇多仓'), findsNothing);
-    expect(find.text(defaultSubscription), findsNothing);
     expect(tester.widget<TextField>(field).maxLines, 1);
     expect(tester.widget<TextField>(field).keyboardType, TextInputType.url);
     Future<void> append(String url) async {
