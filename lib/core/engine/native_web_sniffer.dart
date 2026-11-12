@@ -54,6 +54,12 @@ abstract interface class NativeWebSnifferView {
 
 typedef NativeWebSnifferViewFactory = NativeWebSnifferView Function();
 
+/// Optional view capability: surfacing a non-fatal platform limitation (for
+/// example an unavailable DevTools connection) without failing the sniff.
+abstract interface class NativeWebSnifferDiagnostics {
+  String? get diagnostic;
+}
+
 /// Executes player JavaScript in a headless WKWebView / WebView2.
 ///
 /// Each invocation has one wall-clock budget, including startup, cookies and
@@ -74,6 +80,10 @@ class NativeWebSniffer {
   final Duration timeout;
   final Set<_SniffOperation> _operations = {};
   bool _disposed = false;
+
+  /// Last native startup/lifecycle failure. A no-hit result is normal, but this
+  /// keeps a missing WebView2 Runtime or a plugin error explainable in logs.
+  String? lastError;
 
   Future<WebSniffHit?> sniff(String pageUrl, Map<String, String> headers) {
     final uri = Uri.tryParse(pageUrl);
@@ -109,9 +119,13 @@ class NativeWebSniffer {
         headers: operation.headers,
         onEvent: (event) => _observe(operation, event),
       );
-    } catch (_) {
+      if (operation.view case final NativeWebSnifferDiagnostics view) {
+        lastError = view.diagnostic ?? lastError;
+      }
+    } catch (error) {
       // MissingPluginException, absent WebView2 and unsupported host platforms
       // are ordinary no-hit results. Never return the navigation URL instead.
+      lastError = error.toString();
       await operation.finish(null);
     }
   }
@@ -244,7 +258,8 @@ class _SniffOperation {
 /// Adapter verified against flutter_inappwebview 6.1.5, Windows 0.6.0 and iOS
 /// 1.1.2 implementations. Windows exposes CDP response events, not a generic
 /// native onLoadResource MIME callback; WKWebView exposes navigation responses.
-class _InAppWebSnifferView implements NativeWebSnifferView {
+class _InAppWebSnifferView
+    implements NativeWebSnifferView, NativeWebSnifferDiagnostics {
   HeadlessInAppWebView? _view;
   InAppWebViewController? _controller;
   bool _runPending = false;
@@ -254,6 +269,10 @@ class _InAppWebSnifferView implements NativeWebSnifferView {
   final _requests = <String, Map<String, String>>{};
   final _cdpListeners = <String>[];
   String _pageUrl = '';
+  String? _diagnostic;
+
+  @override
+  String? get diagnostic => _diagnostic;
   String? _userAgent;
   final String _cookieScope = 'liuguang-native-sniff-${_nextCookieScope++}';
   static int _nextCookieScope = 0;
@@ -403,22 +422,34 @@ class _InAppWebSnifferView implements NativeWebSnifferView {
       final controller = await ready.future;
       if (_closed) return;
       if (windows) {
-        await _enableWindowsNetwork(controller);
+        // CDP is the preferred MIME source on WebView2, but it is an optional
+        // accelerator: a host that does not route DevTools commands must still
+        // observe the page, so its failure never aborts the navigation.
+        try {
+          await _enableWindowsNetwork(controller);
+        } catch (error) {
+          _diagnostic = 'cdp: $error';
+        }
         if (cookie != null) {
           for (final part in cookie.split(';')) {
             if (_closed) return;
             final split = part.indexOf('=');
             if (split <= 0) continue;
-            await controller.callDevToolsProtocolMethod(
-              methodName: 'Network.setCookie',
-              parameters: {
-                'url': pageUrl,
-                'name': part.substring(0, split).trim(),
-                'value': part.substring(split + 1).trim(),
-                'path': '/',
-                'secure': Uri.parse(pageUrl).scheme == 'https',
-              },
-            );
+            try {
+              await controller.callDevToolsProtocolMethod(
+                methodName: 'Network.setCookie',
+                parameters: {
+                  'url': pageUrl,
+                  'name': part.substring(0, split).trim(),
+                  'value': part.substring(split + 1).trim(),
+                  'path': '/',
+                  'secure': Uri.parse(pageUrl).scheme == 'https',
+                },
+              );
+            } catch (error) {
+              _diagnostic = 'cdn-cookie: $error';
+              break;
+            }
           }
         }
       } else if (cookie != null && cookie.isNotEmpty) {

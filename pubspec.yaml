@@ -40,6 +40,13 @@ dependencies:
   sync_http: ^0.3.1
   flutter_inappwebview: 6.1.5
 
+# The published 1.1.3 Android side calls getDefaultProguardFile('proguard-android.txt'),
+# which AGP 9 rejects during project evaluation. The vendored copy changes only those
+# two lines to 'proguard-android-optimize.txt'; Dart and Java sources are unchanged.
+dependency_overrides:
+  flutter_inappwebview_android:
+    path: third_party/flutter_inappwebview_android
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

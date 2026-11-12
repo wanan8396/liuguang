@@ -142,7 +142,9 @@ void main() {
             expect(
               hit,
               isNotNull,
-              reason: 'Requires installed native WebView runtime: $mode',
+              reason:
+                  'Requires installed native WebView runtime: $mode · '
+                  'native error: ${sniffer.lastError}',
             );
             final uri = Uri.parse(hit!.url);
             expect(uri.host, '127.0.0.1');
@@ -210,7 +212,7 @@ void main() {
         try {
           final url = fixture.page('dom');
           final hit = await sniffer.sniff(url, const {});
-          expect(hit, isNotNull);
+          expect(hit, isNotNull, reason: 'native error: ${sniffer.lastError}');
           expect(Uri.parse(hit!.url).path, startsWith('/stream/dom-'));
           expect(hit.url, endsWith('.mp4'));
           expect(hit.headers['Referer'], url);
