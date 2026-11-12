@@ -122,7 +122,10 @@ Uint8List _waveFixture() {
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
-  final supported = Platform.isWindows || Platform.isIOS;
+  // Native observation is enabled on WKWebView hosts. The Windows adapter in
+  // this dependency does not deliver request/response/bridge events, so the
+  // product uses the verified static extractor there instead of waiting for it.
+  final supported = Platform.isIOS || Platform.isMacOS;
 
   testWidgets(
     'real headless WebView executes delayed fetch and preserves session',

@@ -1,6 +1,7 @@
 # 0.1.7
 
-- Windows WebView2 / iOS WKWebView 原生嗅探：执行网页 JS，观察 fetch/XHR、响应 MIME 和已加载媒体 DOM；保留 UA/Referer/资源 Cookie，排除导航页、HTML 与 HTTP 错误，支持取消、总超时和原生 view 释放。缺少组件时才走静态提取兜底。
+- iOS / macOS 用 WKWebView 原生嗅探执行网页 JS，观察 fetch/XHR、响应 MIME 和已加载媒体 DOM；保留 UA/Referer/资源 Cookie，排除导航页、HTML 与 HTTP 错误，支持取消、总超时和原生视图释放。
+- Windows 保留带内容校验的静态提取：媒体探测最多读 1024 字节并取消上游连接、保留播放页 Referer，不再凭扩展名猜测。无头 WebView2 在该插件版本中能创建视图但不投递网络/JS 事件（已在装有 WebView2 Runtime 131 的 runner 实测），因此不启用该路径，避免每次解析白等 25 秒。
 - 修正 type=0 解析器和 playUrl 前缀曾被当作 JSON 后丢弃的问题；Windows/iOS HTML 直播接入同一嗅探路径，JSON 解析不强制抹除后续 parse 状态。
 - 新增显式 Android 引擎连接：Windows/iOS 的 JAR/DEX 会话和 type=2/3 解析由同网 Android 原生引擎执行；随机令牌、加密保存、严格 RPC allowlist，流式媒体/HLS/Range，停止、退出、超时撤销会话。Android 服务仅前台手动启用。
 - JAR 内嵌 JS 改为 manifest 按 csp_* 精确选择或根 spider.js 明确兼容，修复全局 spider 回退，加入 MD5、中央目录/CRC/data descriptor 与解压限额检查，避免把库文件或 JSON 当可执行源码。

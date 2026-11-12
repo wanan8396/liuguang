@@ -234,6 +234,20 @@ void main() {
     await sniffer.dispose();
   });
 
+  test(
+    'Windows host skips native observation unless explicitly enabled',
+    () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+      final sniffer = NativeWebSniffer();
+      try {
+        expect(sniffer.enabled, isFalse);
+        expect(await sniffer.sniff(page, const {}), isNull);
+      } finally {
+        await sniffer.dispose();
+      }
+    },
+  );
+
   test('real Windows adapter with missing method channel returns null', () async {
     debugDefaultTargetPlatformOverride = TargetPlatform.windows;
     final previous = InAppWebViewPlatform.instance;
@@ -249,7 +263,7 @@ void main() {
           // how a host with no registered native plugin answers the real adapter.
           throw MissingPluginException('No native host installed');
         });
-    final sniffer = NativeWebSniffer();
+    final sniffer = NativeWebSniffer(enabled: true);
     try {
       expect(await sniffer.sniff(page, const {}), isNull);
       expect(calls, 1);
@@ -285,7 +299,7 @@ void main() {
       );
       return run.future;
     });
-    final sniffer = NativeWebSniffer();
+    final sniffer = NativeWebSniffer(enabled: true);
     try {
       final pending = sniffer.sniff(page, const {});
       await Future<void>.delayed(Duration.zero);

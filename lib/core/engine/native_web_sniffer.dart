@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
+import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -71,10 +72,17 @@ class NativeWebSniffer {
   NativeWebSniffer({
     NativeWebSnifferViewFactory? viewFactory,
     Duration timeout = const Duration(seconds: 25),
+    // Injecting a view factory means the caller owns platform suitability.
+    bool? enabled,
   }) : _viewFactory = viewFactory ?? _InAppWebSnifferView.new,
+       enabled = enabled ?? viewFactory != null || platformObserved,
        timeout = timeout > const Duration(seconds: 25)
            ? const Duration(seconds: 25)
            : timeout;
+
+  /// False on hosts without a working headless observation path; callers then
+  /// use the static extractor without paying a native startup delay.
+  final bool enabled;
 
   final NativeWebSnifferViewFactory _viewFactory;
   final Duration timeout;
@@ -85,8 +93,18 @@ class NativeWebSniffer {
   /// keeps a missing WebView2 Runtime or a plugin error explainable in logs.
   String? lastError;
 
+  /// Platforms where a headless native view both creates and forwards page
+  /// network/JS observations. Windows is deliberately excluded: in this build
+  /// the headless WebView2 view is created but delivers no request, response or
+  /// bridge events (confirmed with the runtime installed), so opening it there
+  /// would only delay the verified static extractor. Windows therefore uses
+  /// [WebSniffer] directly; WKWebView on iOS is observed natively.
+  static bool get platformObserved =>
+      !kIsWeb && (Platform.isIOS || Platform.isMacOS);
+
   Future<WebSniffHit?> sniff(String pageUrl, Map<String, String> headers) {
     final uri = Uri.tryParse(pageUrl);
+    if (!enabled) return Future.value();
     if (_disposed ||
         timeout <= Duration.zero ||
         uri == null ||
