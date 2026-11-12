@@ -18,7 +18,9 @@
 
 能构建、能启动、能导入配置与真实源能播放是不同层级。不同 JS 方言、插件额外宿主 API、网页认证、媒体编解码和第三方服务仍需分别验收；这里没有把跨平台支持等同于任意 Android 插件兼容。同步 JS 请求使用的回环服务属于应用运行时；CI 仅通过受控 loopback fixture 回归 JS HTTP/HTML/crypto 和生命周期，不启动面向局域网的订阅推送服务。
 
-**网页嗅探：**Windows 的 WebView2 / iOS 的 WKWebView 真正执行播放页 JS，观察 fetch、XHR、网络响应与已加载的媒体 DOM。导航页自身、HTML 登录页、HTTP 错误、blob/data URL 不作为成功资源；返回播放器的地址携带页面 Referer、User-Agent 和当前资源 Cookie。每个原生操作最多 25 秒，退出/切源取消并释放 view。`type=0` 解析器和 `playUrl` 前缀交给浏览器，`type=1` 保留 JSON 解析。原生组件缺失或未命中时使用静态提取兜底；兜底只取最多两级页面、24 个候选，媒体探测最多读取 1024 字节并停止连接，失败不再凭文件扩展名猜成功。完整解析等待期限为 40 秒。Windows 需要 Microsoft Edge WebView2 Runtime；它是系统依赖，不是另行安装的浏览器自动化服务。带交互登录、人机验证、DRM 或私有播放器协议的页面仍需针对具体源验收。
+**网页嗅探的验证方式：**Windows 的 WebView2 动态页面验收在 CI 中自动执行（工作流会确保 Microsoft Edge WebView2 Runtime 可用）；iOS 的 WKWebView 验收需要已启动的模拟器与首次 Xcode 模拟器构建，超出托管 runner 的时间预算，属本地 macOS 手动步骤：`xcrun simctl boot <设备>` 后执行 `flutter test integration_test/native_web_sniffer_test.dart -d <设备>`。CI 对 iOS 仍执行 JavaScriptCore 受控测试、设备编译与打包。
+
+**网页嗅探：**Windows 的 WebView2 / iOS 的 WKWebView 真正执行播放页 JS，观察 fetch、XHR、网络响应与已加载的媒体 DOM。导航页自身、HTML 登录页、HTTP 错误、blob/data URL 不作为成功资源；返回播放器的地址携带页面 Referer、User-Agent 和当前资源 Cookie。每个原生操作最多 25 秒，退出/切源取消并释放 view。`type=0` 解析器和 `playUrl` 前缀交给浏览器，`type=1` 保留 JSON 解析。原生组件缺失或未命中时使用静态提取兜底；兜底只取最多两级页面、24 个候选，媒体探测最多读取 1024 字节并停止连接，失败不再凭文件扩展名猜成功。完整解析等待期限为 40 秒。Windows 需要 Microsoft Edge WebView2 Runtime（Windows 10/11 通常随 Edge 预装）；若缺失，原生嗅探在 10 秒内放弃并回退静态提取，不会卡住播放。它是系统依赖，不是另行安装的浏览器自动化服务。带交互登录、人机验证、DRM 或私有播放器协议的页面仍需针对具体源验收。
 
 **JAR 源：**未设置 Android 引擎时，只执行明确声明的内嵌 JS。归档通过中央目录、CRC 和解压限额验证；有 `META-INF/liuguang.json` 时按当前 `site.api` 的映射选择入口，无 manifest 时只兼容根目录精确 `spider.js`，不再执行任意第一个 `.js`。`spider.json` 是元数据或显式入口映射，绝非自动执行的 JS。支持 `site.jar` 优先、仓库 `spider` 回退、相对 URL 与 `;md5;` 校验。归档最多 8 MiB / 2048 条目，单条解压 8 MiB、总解压 32 MiB、JS 4 MiB；超限和损坏均报明确错误。
 

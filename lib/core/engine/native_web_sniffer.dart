@@ -419,7 +419,18 @@ class _InAppWebSnifferView
       await _view!.run();
       _runPending = false;
       if (_closed) return;
-      final controller = await ready.future;
+      // A missing WebView2 Runtime, or a host that cannot create the view,
+      // never completes onWebViewCreated. Bound it so the caller falls back to
+      // static extraction quickly instead of burning the whole budget.
+      final InAppWebViewController controller;
+      try {
+        controller = await ready.future.timeout(const Duration(seconds: 10));
+      } on TimeoutException {
+        _diagnostic = windows
+            ? 'native view not created: Microsoft Edge WebView2 Runtime missing?'
+            : 'native view not created';
+        return;
+      }
       if (_closed) return;
       if (windows) {
         // CDP is the preferred MIME source on WebView2, but it is an optional
