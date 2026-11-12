@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show ZLibEncoder;
 import 'dart:typed_data';
 
+import 'package:archive/archive.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tvbox/core/engine/jar_compat.dart';
@@ -40,30 +40,18 @@ ResponseBody _text(
   Map<String, List<String>> headers = const {},
 }) => _bytes(utf8.encode(value), status: status, headers: headers);
 
-/// Minimal ZIP writer: enough for stored/deflated entries and the local header
-/// walk in [JarCompat]; it deliberately omits a central directory.
+/// Controlled ZIP fixtures include a real central directory and CRC values.
 List<int> _zip(List<(String, String, bool)> entries) {
-  final out = BytesBuilder();
+  final archive = Archive();
   for (final (name, content, deflate) in entries) {
-    final nameBytes = utf8.encode(name);
-    final data = utf8.encode(content);
-    final payload = deflate
-        ? Uint8List.fromList(ZLibEncoder(raw: true).convert(data))
-        : Uint8List.fromList(data);
-    final header = ByteData(30);
-    header.setUint32(0, 0x04034b50, Endian.little);
-    header.setUint16(4, 20, Endian.little);
-    header.setUint16(6, 0, Endian.little);
-    header.setUint16(8, deflate ? 8 : 0, Endian.little);
-    header.setUint32(18, payload.length, Endian.little);
-    header.setUint32(22, data.length, Endian.little);
-    header.setUint16(26, nameBytes.length, Endian.little);
-    header.setUint16(28, 0, Endian.little);
-    out.add(header.buffer.asUint8List());
-    out.add(nameBytes);
-    out.add(payload);
+    archive.add(
+      ArchiveFile.string(
+        name,
+        content,
+      )..compression = deflate ? CompressionType.deflate : CompressionType.none,
+    );
   }
-  return out.toBytes();
+  return ZipEncoder().encode(archive);
 }
 
 void main() {
@@ -97,7 +85,7 @@ void main() {
       ).sniff('https://site.invalid/play/1', {'User-Agent': 'fixture'});
       expect(hit?.url, 'https://cdn.invalid/meta.m3u8');
       expect(hit?.headers['User-Agent'], 'fixture');
-      expect(hit?.headers['Referer'], 'https://cdn.invalid/');
+      expect(hit?.headers['Referer'], 'https://site.invalid/play/1');
       expect(
         adapter.requests.map((r) => r.uri.toString()),
         contains('https://site.invalid/play/1'),
@@ -196,7 +184,7 @@ void main() {
           client,
         ).inspect('https://site.invalid/only.jar', const {});
         expect(result.hasDex, isTrue);
-        expect(result.isPortableWithoutJs, isTrue);
+        expect(result.requiresAndroid, isTrue);
         expect(result.embeddedJs, isNull);
         client.close();
       },

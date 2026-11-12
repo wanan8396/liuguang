@@ -12,5 +12,10 @@ public final class Controlled extends Spider {
     @Override public String detailContent(List<String> ids) { return "{\"list\":[{\"vod_id\":\"one\",\"vod_play_from\":\"fixture\",\"vod_play_url\":\"One$https://example.invalid/video.m3u8\"}]}"; }
     @Override public String searchContent(String keyword,boolean quick,String pg) { return "{\"page\":"+pg+",\"list\":[{\"vod_id\":\"one\"}]}"; }
     @Override public String playerContent(String flag,String id,List<String> vip) { return "{\"parse\":0,\"url\":\"https://example.invalid/video.m3u8\",\"header\":{\"Referer\":\"https://example.invalid/\"}}"; }
-    @Override public Object[] proxyLocal(Map<String,String> params) { return new Object[]{200,"text/plain",new ByteArrayInputStream("controlled-proxy".getBytes(java.nio.charset.StandardCharsets.UTF_8))}; }
+    @Override public Object[] proxyLocal(Map<String,String> params) {
+        if ("hls".equals(params.get("kind"))) {
+            return new Object[]{200,"application/vnd.apple.mpegurl",new ByteArrayInputStream("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-ENDLIST\n".getBytes(java.nio.charset.StandardCharsets.UTF_8))};
+        }
+        return new Object[]{200,"text/plain",new ByteArrayInputStream("controlled-proxy".getBytes(java.nio.charset.StandardCharsets.UTF_8))};
+    }
 }

@@ -59,13 +59,37 @@ class AppHttpClient {
   Future<FetchResult> fetch(
     String url, {
     Map<String, String> headers = const {},
+  }) => _guardedFetch(url, headers);
+
+  /// Fetch only a small prefix of a resource, cancelling the response stream as
+  /// soon as enough bytes arrive. Media probes must not download whole videos.
+  Future<FetchResult> fetchPrefix(
+    String url, {
+    Map<String, String> headers = const {},
+    int maxBytes = 1024,
+  }) {
+    if (maxBytes <= 0 || maxBytes > this.maxBytes) {
+      throw ArgumentError.value(maxBytes, 'maxBytes');
+    }
+    return _guardedFetch(url, headers, prefixBytes: maxBytes);
+  }
+
+  Future<FetchResult> _guardedFetch(
+    String url,
+    Map<String, String> headers, {
+    int? prefixBytes,
   }) async {
     if (_closed) {
       throw const AppHttpException('closed', 'HTTP client is closed');
     }
     final token = CancelToken();
     try {
-      return await _fetch(url, headers, token).timeout(
+      return await _fetch(
+        url,
+        headers,
+        token,
+        prefixBytes: prefixBytes,
+      ).timeout(
         timeout,
         onTimeout: () {
           token.cancel('total timeout');
@@ -108,8 +132,9 @@ class AppHttpClient {
   Future<FetchResult> _fetch(
     String url,
     Map<String, String> headers,
-    CancelToken token,
-  ) async {
+    CancelToken token, {
+    int? prefixBytes,
+  }) async {
     var current = normalizeHttpUrl(url);
     final visited = <String>{};
     var requestHeaders = <String, String>{
@@ -182,7 +207,7 @@ class AppHttpClient {
       final length = int.tryParse(
         response.headers.value('content-length') ?? '',
       );
-      if (length != null && length > maxBytes) {
+      if (prefixBytes == null && length != null && length > maxBytes) {
         await body.stream.listen((_) {}).cancel();
         throw AppHttpException(
           'size_limit',
@@ -192,6 +217,14 @@ class AppHttpClient {
       }
       final bytes = BytesBuilder(copy: false);
       await for (final chunk in body.stream) {
+        if (prefixBytes != null) {
+          final remaining = prefixBytes - bytes.length;
+          bytes.add(
+            chunk.length <= remaining ? chunk : chunk.sublist(0, remaining),
+          );
+          if (bytes.length >= prefixBytes) break;
+          continue;
+        }
         if (bytes.length + chunk.length > maxBytes) {
           token.cancel('response size limit');
           throw AppHttpException(
@@ -201,6 +234,9 @@ class AppHttpClient {
           );
         }
         bytes.add(chunk);
+      }
+      if (prefixBytes != null && bytes.length >= prefixBytes) {
+        token.cancel('bounded media prefix received');
       }
       return FetchResult(
         bytes: bytes.takeBytes(),

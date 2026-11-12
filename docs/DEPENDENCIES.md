@@ -44,6 +44,13 @@ Imported JS engine/libraries and host adapter source are included as editable as
 - JS requests run in dedicated worker isolates; synchronous `req` bridges to asynchronous HTTP(S) via loopback. Timeouts/cancellation dispose workers. This is runtime lifecycle management, not process isolation for untrusted code.
 - The per-release Windows/iOS packages include the upstream MIT text as `flutter_js-LICENSE.txt`, alongside this project's license and third-party notices.
 
+## Native WebView player-page discovery
+
+- [flutter_inappwebview 6.1.5](https://pub.dev/packages/flutter_inappwebview/versions/6.1.5), Windows implementation 0.6.0 and iOS implementation 1.1.2, pinned with their pub.dev hashes in `pubspec.lock`. Upstream source: https://github.com/pichillilorenzo/flutter_inappwebview (Apache-2.0); Flutter's generated license registry carries package notices.
+- Windows uses installed Microsoft Edge WebView2 Runtime with headless WebView2 and CDP request/response observations. C++ plugin builds fetch the NuGet versions declared by the package: WebView2 SDK 1.0.2792.45, WIL 1.0.231216.1 and nlohmann/json 3.11.2. A system runtime is still required after copying the application bundle.
+- iOS uses WKWebView in WebKit. The application-scoped cookie-store adapter targets only the marked headless view, rather than copying secrets into the global persistent WK cookie jar.
+- Controlled integration fixtures execute delayed page JavaScript and inspect actual native network observations; ordinary Dart mocks prove lifecycle only. See platform CI for runtime test results.
+
 ## Media and build dependencies
 
 Flutter packages are recorded in `pubspec.lock`. media_kit's Dart wrapper is MIT; its libmpv/FFmpeg binaries have additional licenses and source/relinking requirements. Their build provenance is provided by:

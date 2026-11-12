@@ -55,6 +55,10 @@ jobs:
           } finally {
             Remove-Item -LiteralPath $bridge -Force
           }
+      - name: Test dynamic JavaScript page with actual WebView2
+        run: |
+          flutter test integration_test/native_web_sniffer_test.dart -d windows --no-pub --timeout 120s
+          if ($LASTEXITCODE -ne 0) { throw 'Dynamic WebView2 sniff regression failed' }
       - name: Build complete Windows release
         run: flutter build windows --release --no-pub
       - name: Package executable, plugin DLLs, runtime and data
@@ -107,6 +111,14 @@ jobs:
           plutil -lint ios/Runner/Info.plist ios/Flutter/AppFrameworkInfo.plist ios/Runner.xcodeproj/project.pbxproj
       - name: Test system JavaScriptCore with controlled fixtures
         run: flutter test --no-pub --timeout 90s test/engine/portable_js_engine_test.dart
+      - name: Test dynamic JavaScript page with actual WKWebView
+        run: |
+          set -euo pipefail
+          simulator=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; ds=json.load(sys.stdin)["devices"]; print(next(d["udid"] for r,items in ds.items() if "iOS" in r for d in items if d["name"].startswith("iPhone")))')
+          xcrun simctl boot "$simulator" || true
+          xcrun simctl bootstatus "$simulator" -b
+          flutter test integration_test/native_web_sniffer_test.dart -d "$simulator" --no-pub --timeout 120s
+          xcrun simctl shutdown "$simulator"
       - name: Build unsigned iOS device application
         run: |
           set -euo pipefail

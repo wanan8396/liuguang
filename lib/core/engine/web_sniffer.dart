@@ -39,16 +39,15 @@ class WebSniffer {
       if (!visited.add(current)) break;
       final String body;
       try {
-        body = utf8.decode(
-          (await http.fetch(current, headers: headers)).bytes,
-          allowMalformed: true,
-        );
+        final response = await http.fetch(current, headers: headers);
+        current = response.finalUrl;
+        body = utf8.decode(response.bytes, allowMalformed: true);
       } on AppHttpException {
         return null;
       }
       final candidates = extract(body, current).take(maxCandidates).toList();
       for (final candidate in candidates) {
-        final verified = await _verify(candidate, headers);
+        final verified = await _verify(candidate, current, headers);
         if (verified != null) return verified;
       }
       final nested = _iframe(body, current, visited);
@@ -162,11 +161,21 @@ class WebSniffer {
     return resolved.toString();
   }
 
-  Future<WebSniffHit?> _verify(String url, Map<String, String> headers) async {
+  Future<WebSniffHit?> _verify(
+    String url,
+    String pageUrl,
+    Map<String, String> headers,
+  ) async {
+    final requestHeaders = Map<String, String>.of(headers);
+    requestHeaders.removeWhere(
+      (key, _) => {'referer', 'range'}.contains(key.toLowerCase()),
+    );
+    requestHeaders['Referer'] = pageUrl;
     try {
-      final probe = await http.fetch(
+      final probe = await http.fetchPrefix(
         url,
-        headers: {...headers, 'Range': 'bytes=0-1023'},
+        headers: {...requestHeaders, 'Range': 'bytes=0-1023'},
+        maxBytes: 1024,
       );
       final types = probe.headers['content-type'] ?? const <String>[];
       final type = (types.isEmpty ? '' : types.first)
@@ -175,21 +184,14 @@ class WebSniffer {
           .trim()
           .toLowerCase();
       final sniffed = _isMediaBytes(probe.bytes, type);
-      final declared = _media.hasMatch(url);
-      if (!sniffed && (!declared || type.contains('html'))) return null;
-      final merged = Map<String, String>.of(headers)
-        ..['Referer'] = _origin(url);
-      return WebSniffHit(probe.finalUrl.isEmpty ? url : probe.finalUrl, merged);
+      if (!sniffed) return null;
+      return WebSniffHit(
+        probe.finalUrl.isEmpty ? url : probe.finalUrl,
+        requestHeaders,
+      );
     } on AppHttpException {
-      // A candidate that fails a text probe can still be media for media_kit.
-      if (!_media.hasMatch(url)) return null;
-      return WebSniffHit(url, {...headers, 'Referer': _origin(url)});
+      return null;
     }
-  }
-
-  static String _origin(String url) {
-    final uri = Uri.tryParse(url);
-    return uri == null ? url : '${uri.scheme}://${uri.authority}/';
   }
 
   static bool _isMediaBytes(Uint8List bytes, String contentType) {

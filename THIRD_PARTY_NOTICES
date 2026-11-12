@@ -60,6 +60,15 @@ Windows / iOS JavaScript runtime
   changes expose namespace exports and CryptoJS/JSEncrypt globals for both
   engines. Original upstream source and notices remain in Android assets.
 
+Native player-page WebView
+  flutter_inappwebview 6.1.5 (Windows 0.6.0 / iOS 1.1.2), Apache-2.0.
+  https://github.com/pichillilorenzo/flutter_inappwebview
+  Pub package hashes are pinned in pubspec.lock; Flutter's license registry
+  preserves notices. Windows uses the installed Microsoft WebView2 Runtime;
+  the plugin builds with NuGet WebView2 SDK/WIL/nlohmann-json dependencies.
+  iOS uses system WebKit. Source wrappers and scoped cookie-store integration
+  are maintained in this application; no browser engine binaries are vendored.
+
 Traditional drpy
   https://github.com/hjdhnx/dr_py
   Fixed source: ca23ffdbf5e429c5893ac60158668fc5af7af192.

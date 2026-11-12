@@ -160,7 +160,9 @@ jobs:
           profile: pixel_2
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          script: cd android && ./gradlew :source_engine:connectedDebugAndroidTest -PciEmulator=true -Pandroid.testInstrumentationRunnerArguments.skipQuickJs=true -Pandroid.testInstrumentationRunnerArguments.class=cn.liuguang.engine.SourceEnginePluginPortTest,cn.liuguang.engine.NativeEngineTest --no-daemon --max-workers=2 -Pkotlin.compiler.execution.strategy=in-process --console=plain
+          script: |
+            cd android && ./gradlew :source_engine:connectedDebugAndroidTest -PciEmulator=true -Pandroid.testInstrumentationRunnerArguments.skipQuickJs=true -Pandroid.testInstrumentationRunnerArguments.class=cn.liuguang.engine.SourceEnginePluginPortTest,cn.liuguang.engine.NativeEngineTest --no-daemon --max-workers=2 -Pkotlin.compiler.execution.strategy=in-process --console=plain
+            bash .github/scripts/run-android-bridge-fixture.sh
       - name: Explain runtime coverage
         if: always()
         run: |

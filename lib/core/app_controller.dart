@@ -10,6 +10,7 @@ import 'config/builtin_subscription.dart';
 export 'config/subscription_batch.dart';
 export 'config/builtin_subscription.dart';
 import 'engine/source_engine.dart';
+import 'engine/android_engine_bridge.dart';
 import 'live/live_repository.dart';
 import 'models/models.dart';
 import 'network/app_http_client.dart';
@@ -212,8 +213,138 @@ class AppController extends ChangeNotifier {
     _notify();
   }
 
+  String? bridgeError;
+  int _bridgeGeneration = 0;
+  bool _bridgeExplicitChange = false;
+  Future<void> _bridgeChanges = Future.value();
+
+  bool _bridgeCurrent(int generation) =>
+      !_disposed && generation == _bridgeGeneration;
+
+  /// Serialize persistence and engine installation together. A superseded write
+  /// restores the previous value before the next commit starts, including when
+  /// secure storage completes after clear/dispose. Capability probes stay outside
+  /// this queue so an offline candidate cannot block clearing a working bridge.
+  Future<void> _installAndroidBridge(
+    int generation,
+    AndroidEngineBridgeApi? api, {
+    String? persisted,
+    void Function()? onInstalled,
+  }) async {
+    final operation = _bridgeChanges.then((_) async {
+      if (!_bridgeCurrent(generation)) return;
+      String? previous;
+      var changed = false;
+      var completed = false;
+      try {
+        if (persisted != null) {
+          previous = await store.readSecret(
+            AndroidEngineBridgeApi.connectionSecretKey,
+          );
+          if (!_bridgeCurrent(generation)) return;
+          changed = true;
+          await store.writeSecret(
+            AndroidEngineBridgeApi.connectionSecretKey,
+            persisted,
+          );
+          if (!_bridgeCurrent(generation)) return;
+        }
+        await engine.configureAndroidBridge(api);
+        onInstalled?.call();
+        if (!_bridgeCurrent(generation)) return;
+        bridgeError = null;
+        completed = true;
+        _notify();
+      } finally {
+        if (changed && !completed) {
+          await store.writeSecret(
+            AndroidEngineBridgeApi.connectionSecretKey,
+            previous ?? '',
+          );
+        }
+      }
+    });
+    // Keep later clear/save operations usable after an individual storage error.
+    _bridgeChanges = operation.catchError((Object _) {});
+    await operation;
+  }
+
+  Future<void> configureAndroidBridge(String endpoint, String token) async {
+    if (_disposed) throw const SourceFailure('closed', '播放器已经关闭');
+    final api = AndroidEngineBridgeApi(endpoint: endpoint, token: token);
+    final generation = ++_bridgeGeneration;
+    _bridgeExplicitChange = true;
+    var installed = false;
+    try {
+      final capabilities = jsonMap(jsonDecode(await api.capabilities()));
+      if (!_bridgeCurrent(generation)) return;
+      if (capabilities['jar'] != true) {
+        throw const SourceFailure('bridge-capability', '此连接没有声明 JAR 执行能力');
+      }
+      await _installAndroidBridge(
+        generation,
+        api,
+        persisted: jsonEncode({
+          'endpoint': api.endpointUrl,
+          'token': token.trim(),
+        }),
+        onInstalled: () => installed = true,
+      );
+    } catch (_) {
+      if (_bridgeCurrent(generation)) rethrow;
+    } finally {
+      if (!installed) await api.dispose();
+    }
+  }
+
+  Future<void> clearAndroidBridge() async {
+    if (_disposed) throw const SourceFailure('closed', '播放器已经关闭');
+    final generation = ++_bridgeGeneration;
+    _bridgeExplicitChange = true;
+    try {
+      await _installAndroidBridge(generation, null, persisted: '');
+    } catch (_) {
+      if (_bridgeCurrent(generation)) rethrow;
+    }
+  }
+
+  Future<void> _restoreAndroidBridge(int generation) async {
+    AndroidEngineBridgeApi? api;
+    var installed = false;
+    try {
+      if (!_bridgeCurrent(generation) || _bridgeExplicitChange) return;
+      final secret = await store.readSecret(
+        AndroidEngineBridgeApi.connectionSecretKey,
+      );
+      if (!_bridgeCurrent(generation) || _bridgeExplicitChange) return;
+      if (secret != null && secret.isNotEmpty) {
+        final saved = jsonMap(jsonDecode(secret));
+        api = AndroidEngineBridgeApi(
+          endpoint: str(saved['endpoint']),
+          token: str(saved['token']),
+        );
+        await _installAndroidBridge(
+          generation,
+          api,
+          onInstalled: () => installed = true,
+        );
+      }
+    } catch (_) {
+      if (_bridgeCurrent(generation)) {
+        bridgeError = '已保存的 Android 引擎连接无效，请在连接页面重新设置';
+      }
+    } finally {
+      if (!installed) await api?.dispose();
+    }
+  }
+
   Future<void> initialize() async {
+    final bridgeGeneration = _bridgeGeneration;
     await store.init();
+    // Restore locally without probing an offline phone, and never supersede a
+    // clear/save requested while initialization or secret storage was pending.
+    await _restoreAndroidBridge(bridgeGeneration);
+    if (_disposed) return;
     final theme = str(store.setting('themeMode'));
     themeMode =
         ThemeMode.values.where((value) => value.name == theme).firstOrNull ??
@@ -1034,6 +1165,7 @@ class AppController extends ChangeNotifier {
   Future<void> _closeResources() async {
     await pairing.stop();
     pairing.dispose();
+    await _bridgeChanges;
     await engine.dispose();
     http.close();
     await store.close();
@@ -1045,6 +1177,7 @@ class AppController extends ChangeNotifier {
     _builtInUpdateTimer?.cancel();
     _builtInGeneration++;
     _disposed = true;
+    _bridgeGeneration++;
     _generation++;
     _searchGeneration++;
     _liveGeneration++;

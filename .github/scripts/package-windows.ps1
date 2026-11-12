@@ -11,6 +11,8 @@ $release = (Resolve-Path -LiteralPath $ReleaseDirectory).Path
 $required = @(
     'liuguang.exe',
     'flutter_windows.dll',
+    'flutter_inappwebview_windows_plugin.dll',
+    'quickjs_c_bridge.dll',
     'msvcp140.dll',
     'vcruntime140.dll',
     'vcruntime140_1.dll',

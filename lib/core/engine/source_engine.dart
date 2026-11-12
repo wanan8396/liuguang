@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -7,7 +8,9 @@ import 'package:xml/xml.dart';
 import '../models/models.dart';
 import '../network/app_http_client.dart';
 import 'source_engine_api.g.dart';
+import 'android_engine_bridge.dart';
 import 'jar_compat.dart';
+import 'native_web_sniffer.dart';
 import 'js_source_engine.dart';
 import 'web_sniffer.dart';
 
@@ -21,13 +24,53 @@ class SourceFailure implements Exception {
 }
 
 class SourceEngine {
-  SourceEngine(this.http, {SourceEngineApi? native, bool? isAndroid})
-    : _native = native ?? SourceEngineApi(),
-      _isAndroid = isAndroid ?? Platform.isAndroid;
+  SourceEngine(
+    this.http, {
+    SourceEngineApi? native,
+    bool? isAndroid,
+    NativeWebSniffer? webSniffer,
+  }) : _native = native ?? SourceEngineApi(),
+       _isAndroid = isAndroid ?? Platform.isAndroid,
+       _webSniffer = webSniffer ?? NativeWebSniffer();
 
   final AppHttpClient http;
   final SourceEngineApi _native;
   final bool _isAndroid;
+  final NativeWebSniffer _webSniffer;
+  AndroidEngineBridgeApi? _androidBridge;
+  String? get androidBridgeEndpoint => _androidBridge?.endpointUrl;
+
+  /// Changes the execution host explicitly. JARs are local embedded JS by
+  /// default; a configured bridge runs their DEX/Android ABI on that device.
+  bool _bridgeChanging = false;
+  Future<void> _bridgeChange = Future.value();
+
+  Future<void> configureAndroidBridge(AndroidEngineBridgeApi? bridge) {
+    _bridgeChanging = true;
+    final next = _bridgeChange.then((_) async {
+      if (_disposed) {
+        await bridge?.dispose();
+        throw const SourceFailure('closed', '源引擎已经关闭');
+      }
+      final previous = _androidBridge;
+      if (identical(previous, bridge)) return;
+      await closeSessions();
+      if (_disposed) {
+        await bridge?.dispose();
+        throw const SourceFailure('closed', '源引擎已经关闭');
+      }
+      _androidBridge = bridge;
+      await previous?.dispose();
+    });
+    final barrier = next.catchError((Object _) {});
+    _bridgeChange = barrier;
+    return next.whenComplete(() {
+      if (identical(_bridgeChange, barrier)) _bridgeChanging = false;
+    });
+  }
+
+  SourceEngineApi get _executionApi =>
+      _isAndroid ? _native : _androidBridge ?? _native;
   late final JsSourceEngine _js = JsSourceEngine(http);
   final Map<String, Future<String>> _sessions = {};
   int _sessionGeneration = 0;
@@ -46,40 +89,83 @@ class SourceEngine {
   /// A JAR cannot run without Android's DEX loader. Some archives ship an
   /// embedded JavaScript spider, which the portable engine can execute; others
   /// are reported explicitly instead of failing later as a network error.
-  bool _isPortableJar(Site site) => site.runtime == 'jar' && !_isAndroid;
+  bool _isPortableJar(Site site) =>
+      site.runtime == 'jar' && !_isAndroid && _androidBridge == null;
 
   final Map<String, Future<Site>> _jarSites = {};
 
-  Future<Site> _portableJarSite(TvConfig config, Site site) {
+  Future<Site> _portableJarSite(TvConfig config, Site site) async {
     final key = _key(config, site);
-    return _jarSites.putIfAbsent(key, () async {
-      final target = Uri.parse(config.url).resolve(site.jar).toString();
+    final generation = _sessionGeneration;
+    final future = _jarSites.putIfAbsent(key, () async {
+      final reference = site.jar.trim().isNotEmpty ? site.jar : config.spider;
+      if (reference.trim().isEmpty) {
+        throw const SourceFailure('jar-missing', '站点和仓库均未配置 JAR 地址');
+      }
+      final parts = reference.split(';md5;');
+      if (parts.length > 2) {
+        throw const SourceFailure('jar-checksum', 'JAR MD5 配置格式无效');
+      }
+      final target = Uri.parse(
+        config.url,
+      ).resolve(parts.first.trim()).toString();
+      Map<String, String> headersFor(String url) =>
+          SourceEngineHeaders.of(config, Site({...site.raw, 'api': url}));
+      final headers = headersFor(target);
+      String? expected = parts.length == 2 ? parts[1].trim() : null;
+      if (expected != null &&
+          {'http', 'https'}.contains(Uri.tryParse(expected)?.scheme)) {
+        expected = utf8
+            .decode(
+              (await http.fetchPrefix(
+                expected,
+                headers: headersFor(expected),
+                maxBytes: 1024,
+              )).bytes,
+            )
+            .trim()
+            .split(RegExp(r'\s+'))
+            .first;
+      }
       final JarInspection inspection;
       try {
         inspection = await JarCompat(
           http,
-        ).inspect(target, SourceEngineHeaders.of(config, site));
+        ).inspect(target, headers, spider: site.api, expectedMd5: expected);
       } on JarInspectError catch (error) {
-        _jarSites.remove(key);
         throw SourceFailure('jar-unavailable', error.message, target);
+      }
+      if (_disposed || generation != _sessionGeneration) {
+        throw const SourceFailure('cancelled', 'JAR 初始化已取消');
       }
       final script = inspection.embeddedJs;
       if (script == null || script.trim().isEmpty) {
-        _jarSites.remove(key);
         throw SourceFailure(
-          'jar-android-only',
+          'jar-android-required',
           inspection.hasDex
-              ? '此 JAR 源需要 Android 运行环境，Windows/iOS 请改用 JS 源'
-              : '此 JAR 没有可移植的 JavaScript 规则，Windows/iOS 请改用 JS 源',
+              ? '此 JAR 含 Android DEX，请在“Android 引擎连接”中连接同网设备执行'
+              : '此 JAR 没有为当前站点声明 JS 入口，请配置 Android 引擎连接',
           target,
         );
       }
       return Site({
         ...site.raw,
-        'api': 'https://local.invalid/jar/${site.key}.js',
+        'api': Uri.parse(
+          target,
+        ).resolve(inspection.selectedEntry ?? 'spider.js').toString(),
         '_jsSource': script,
       });
     });
+    try {
+      final result = await future;
+      if (_disposed || generation != _sessionGeneration) {
+        throw const SourceFailure('cancelled', 'JAR 初始化已取消');
+      }
+      return result;
+    } catch (_) {
+      if (identical(_jarSites[key], future)) _jarSites.remove(key);
+      rethrow;
+    }
   }
 
   /// Runs one portable call against a JAR site's embedded script, if any.
@@ -88,9 +174,13 @@ class SourceEngine {
 
   Future<String> _session(TvConfig config, Site site) async {
     if (_disposed) throw const SourceFailure('closed', '源引擎已经关闭');
-    if (!_isAndroid) {
-      throw const SourceFailure('platform', '该源需要 Android 原生运行引擎');
+    if (_bridgeChanging) {
+      throw const SourceFailure('bridge-changing', '引擎连接切换中，请稍后重试');
     }
+    if (!_isAndroid && _androidBridge == null) {
+      throw const SourceFailure('platform', '请先连接同网 Android 引擎');
+    }
+    final api = _executionApi;
     final key = _key(config, site);
     final existing = _sessions[key];
     if (existing != null) return existing;
@@ -106,11 +196,10 @@ class SourceEngine {
         if (credentials.isNotEmpty) '_privateCredentials': credentials,
       };
       final id = await _invoke(
-        () =>
-            _native.openSession(jsonEncode(payload), jsonEncode(site.toJson())),
+        () => api.openSession(jsonEncode(payload), jsonEncode(site.toJson())),
       );
       if (_disposed || generation != _sessionGeneration) {
-        await _invoke(() => _native.closeSession(id));
+        await _invoke(() => api.closeSession(id));
         throw const SourceFailure('cancelled', '源初始化已取消');
       }
       return id;
@@ -166,7 +255,7 @@ class SourceEngine {
     if (_isNative(site)) {
       return VodPage.fromJson(
         _parseObject(
-          await _dispatch(config, site, (id) => _native.home(id, true)),
+          await _dispatch(config, site, (id) => _executionApi.home(id, true)),
         ),
       );
     }
@@ -206,7 +295,7 @@ class SourceEngine {
           await _dispatch(
             config,
             site,
-            (id) => _native.category(id, tid, page, jsonEncode(filters)),
+            (id) => _executionApi.category(id, tid, page, jsonEncode(filters)),
           ),
         ),
       );
@@ -248,7 +337,7 @@ class SourceEngine {
           await _dispatch(
             config,
             site,
-            (id) => _native.search(id, keyword, page),
+            (id) => _executionApi.search(id, keyword, page),
           ),
         ),
       );
@@ -273,7 +362,11 @@ class SourceEngine {
       result = await _js.call(config, site, 'detail', [id]);
     } else if (_isNative(site)) {
       result = _parseObject(
-        await _dispatch(config, site, (session) => _native.detail(session, id)),
+        await _dispatch(
+          config,
+          site,
+          (session) => _executionApi.detail(session, id),
+        ),
       );
     } else {
       result = await _request(config, site, {'ac': 'detail', 'ids': id});
@@ -301,7 +394,7 @@ class SourceEngine {
         await _dispatch(
           config,
           site,
-          (session) => _native.play(session, flag, id),
+          (session) => _executionApi.play(session, flag, id),
         ),
       );
     } else if (site.type == 4) {
@@ -315,6 +408,8 @@ class SourceEngine {
     result['flag'] ??= flag;
     final playback = Playback.fromJson(result);
     final isLocal = _isLoopback(playback.url);
+    final usesAndroidBridge =
+        !_isAndroid && _androidBridge != null && site.runtime == 'jar';
     final requiresResolution =
         result['url'] is List ||
         playback.parse ||
@@ -323,9 +418,9 @@ class SourceEngine {
         isLocal ||
         // Android's proxy owns HTTP headers, redirects and HLS subrequests even
         // when the source already returned a direct media URL (parse=0).
-        (_isAndroid &&
+        ((_isAndroid || usesAndroidBridge) &&
             {'http', 'https'}.contains(Uri.tryParse(playback.url)?.scheme));
-    if (requiresResolution && !_isAndroid) {
+    if (requiresResolution && !_isAndroid && !usesAndroidBridge) {
       return _resolvePortable(config, result);
     }
     if (requiresResolution) {
@@ -333,7 +428,7 @@ class SourceEngine {
         await _dispatch(
           config,
           site,
-          (session) => _native.resolve(
+          (session) => _executionApi.resolve(
             session,
             jsonEncode(result),
             jsonEncode(config.parses),
@@ -355,70 +450,147 @@ class SourceEngine {
     TvConfig config,
     Map<String, dynamic> raw,
   ) async {
-    final result = Map<String, dynamic>.of(raw);
+    final generation = _requestGeneration;
+    var expired = false;
+    void check() {
+      if (expired || _disposed || generation != _requestGeneration) {
+        throw const SourceFailure('cancelled', '播放解析已取消');
+      }
+    }
+
+    return _resolvePortableImpl(config, raw, check).timeout(
+      const Duration(seconds: 40),
+      onTimeout: () {
+        expired = true;
+        unawaited(_webSniffer.cancel());
+        throw const SourceFailure('resolve-timeout', '播放解析超过 40 秒，请切换线路');
+      },
+    );
+  }
+
+  Future<Playback> _resolvePortableImpl(
+    TvConfig config,
+    Map<String, dynamic> raw,
+    void Function() check,
+  ) async {
+    check();
+    var result = Map<String, dynamic>.of(raw);
     if (result['url'] is List) {
-      final urls = jsonList(
-        result['url'],
-      ).map(str).where((v) => v.startsWith('http')).toList();
-      if (urls.isNotEmpty) result['url'] = urls.first;
+      final choices = jsonList(result['url']);
+      if (choices.isEmpty || choices.length.isOdd) {
+        throw const SourceFailure('quality-list', '清晰度列表必须是名称和地址对');
+      }
+      final urls = <String>[];
+      for (var i = 1; i < choices.length; i += 2) {
+        final uri = Uri.tryParse(str(choices[i]));
+        if (uri == null || !{'http', 'https'}.contains(uri.scheme)) {
+          throw const SourceFailure('quality-list', '清晰度列表含无效地址');
+        }
+        urls.add(uri.toString());
+      }
+      result['url'] = urls.first;
     }
     var playback = Playback.fromJson(result);
-    // A local JS proxy is already a playable source; media_kit sends its headers.
     if (!playback.parse &&
         intValue(result['jx']) == 0 &&
         str(result['playUrl']).isEmpty) {
       _validatePlaybackUrl(playback.url);
       return playback;
     }
-    final candidates = <String>[
+
+    // Android parser plugins run on an explicitly connected Android host.
+    if (_androidBridge != null &&
+        config.parses.any((p) => {2, 3}.contains(intValue(p['type'])))) {
+      final resolved = _parseObject(
+        await _dispatch(
+          config,
+          Site({'key': '__portable_parser__', 'api': config.url, 'type': 4}),
+          (session) => _executionApi.resolve(
+            session,
+            jsonEncode(result),
+            jsonEncode(config.parses),
+          ),
+        ),
+      );
+      check();
+      final parsed = Playback.fromJson(resolved);
+      if (!parsed.parse && parsed.url.isNotEmpty) {
+        _validatePlaybackUrl(parsed.url);
+        return parsed;
+      }
+    }
+
+    // JSON parsers and browser parsers are distinct. An HTML parse=0 parser
+    // prefix must not be fetched as JSON then accidentally discarded.
+    for (final parser in config.parses) {
+      if (intValue(parser['type']) != 1 || str(parser['url']).isEmpty) continue;
+      check();
+      try {
+        final response = await http.fetch(
+          '${parser['url']}${playback.url}',
+          headers: playback.headers,
+        );
+        check();
+        final parsed = jsonMap(jsonDecode(utf8.decode(response.bytes)));
+        final data = parsed['data'] is Map ? jsonMap(parsed['data']) : parsed;
+        if (str(data['url']).isEmpty) continue;
+        final headers = <String, String>{
+          ...playback.headers,
+          ...jsonMap(
+            data['header'] ?? data['headers'],
+          ).map((key, value) => MapEntry(key, str(value))),
+        };
+        result = {...result, ...data, 'header': headers, 'playUrl': ''};
+        result['parse'] = data['parse'] ?? 0;
+        result['jx'] = data['jx'] ?? 0;
+        playback = Playback.fromJson(result);
+        if (!playback.parse && intValue(result['jx']) == 0) {
+          _validatePlaybackUrl(playback.url);
+          return playback;
+        }
+        break;
+      } on SourceFailure {
+        rethrow;
+      } catch (_) {
+        /* another configured parser may be available */
+      }
+    }
+
+    final pages = <String>{
       if (str(result['playUrl']).isNotEmpty)
         '${result['playUrl']}${playback.url}',
       for (final parser in config.parses)
-        if (intValue(parser['type']) == 1 && str(parser['url']).isNotEmpty)
+        if (intValue(parser['type']) == 0 && str(parser['url']).isNotEmpty)
           '${parser['url']}${playback.url}',
-    ];
-    for (final candidate in candidates) {
-      try {
-        final parsed = jsonMap(
-          jsonDecode(
-            utf8.decode(
-              (await http.fetch(candidate, headers: playback.headers)).bytes,
-            ),
-          ),
-        );
-        final data = parsed['data'] is Map ? jsonMap(parsed['data']) : parsed;
-        if (str(data['url']).isEmpty) continue;
-        playback = Playback.fromJson({
-          ...data,
-          'parse': 0,
-          'header': data['header'] ?? playback.headers,
-        });
-        _validatePlaybackUrl(playback.url);
-        return playback;
-      } catch (_) {
-        /* try the next configured JSON parser */
+      playback.url,
+    };
+    for (final page in pages) {
+      check();
+      final uri = Uri.tryParse(page);
+      if (uri == null || !{'http', 'https'}.contains(uri.scheme)) continue;
+      if (_looksLikeMedia(page)) {
+        return Playback(url: page, headers: playback.headers);
       }
+      final hit = await _webSniffer.sniff(page, playback.headers);
+      check();
+      final discovered =
+          hit ?? await WebSniffer(http).sniff(page, playback.headers);
+      check();
+      if (discovered == null) continue;
+      _validatePlaybackUrl(discovered.url);
+      return Playback.fromJson({
+        ...result,
+        'url': discovered.url,
+        'parse': 0,
+        'jx': 0,
+        'playUrl': '',
+        'header': discovered.headers,
+      });
     }
-    // Android JAR parsers cannot run here, but page sniffing is portable: a
-    // parse=1 page URL is opened, its declared or scripted media is verified
-    // and returned with the headers media_kit needs.
-    final page = Uri.tryParse(playback.url);
-    if (page != null &&
-        {'http', 'https'}.contains(page.scheme) &&
-        !_looksLikeMedia(playback.url)) {
-      final hit = await WebSniffer(http).sniff(playback.url, playback.headers);
-      if (hit != null) {
-        _validatePlaybackUrl(hit.url);
-        return Playback.fromJson({
-          'url': hit.url,
-          'parse': 0,
-          'jx': 0,
-          'playUrl': '',
-          'header': hit.headers,
-        });
-      }
-    }
-    throw const SourceFailure('unresolved', '解析器和网页嗅探都没有找到可播放地址；本机不支持 JAR 解析器');
+    throw const SourceFailure(
+      'unresolved',
+      '网页嗅探和解析器未找到可播放地址；可切换线路或连接 Android 引擎',
+    );
   }
 
   Future<Playback> playLive(
@@ -449,12 +621,13 @@ class SourceEngine {
       'parse': _isLoopback(url) ? 0 : 1,
       'flag': 'live',
     };
+    if (!_isAndroid) return _resolvePortable(selectedConfig, result);
     final resolved = Playback.fromJson(
       _parseObject(
         await _dispatch(
           selectedConfig,
           selectedSite,
-          (session) => _native.resolve(
+          (session) => _executionApi.resolve(
             session,
             jsonEncode(result),
             jsonEncode(selectedConfig.parses),
@@ -479,7 +652,7 @@ class SourceEngine {
     return _dispatch(
       config,
       site,
-      (session) => _native.fetchLocal(session, url),
+      (session) => _executionApi.fetchLocal(session, url),
     );
   }
 
@@ -487,13 +660,14 @@ class SourceEngine {
     _requestGeneration++;
     _sessionGeneration++;
     _jarSites.clear();
+    final api = _executionApi;
     final sessions = List<Future<String>>.of(_sessions.values);
-    await _js.closeSessions();
+    await Future.wait([_js.closeSessions(), _webSniffer.cancel()]);
     await Future.wait(
       sessions.map((future) async {
         try {
           final id = await future;
-          await _invoke(() => _native.cancel(id));
+          await _invoke(() => api.cancel(id));
         } catch (_) {
           // Failed initialization has no live native session to cancel.
         }
@@ -505,14 +679,15 @@ class SourceEngine {
     _requestGeneration++;
     _sessionGeneration++;
     _jarSites.clear();
+    final api = _executionApi;
     final sessions = List<Future<String>>.of(_sessions.values);
     _sessions.clear();
-    await _js.closeSessions();
+    await Future.wait([_js.closeSessions(), _webSniffer.cancel()]);
     await Future.wait(
       sessions.map((future) async {
         try {
           final id = await future;
-          await _invoke(() => _native.closeSession(id));
+          await _invoke(() => api.closeSession(id));
         } catch (_) {
           // Closing other sessions must continue after one plugin has crashed.
         }
@@ -521,26 +696,37 @@ class SourceEngine {
   }
 
   Future<Map<String, dynamic>> capabilities() async => _isAndroid
-      ? _parseObject(await _invoke(_native.capabilities))
+      ? _parseObject(await _invoke(_executionApi.capabilities))
       : {
           'platform': Platform.operatingSystem,
           'cms': true,
           'remote': true,
-          'jar': false,
+          'jar': _androidBridge != null,
+          'jarExecution': _androidBridge == null
+              ? 'embedded-js'
+              : 'android-bridge',
           'jarEmbeddedJs': true,
           'js': Platform.isWindows || Platform.isIOS || Platform.isMacOS,
           'jsModules': 'single-file',
           'sniffer': true,
+          'webView': Platform.isWindows || Platform.isIOS || Platform.isMacOS,
         };
 
   Future<void> dispose() async {
     _disposed = true;
+    await _bridgeChange;
     await closeSessions();
     await _js.dispose();
+    await _webSniffer.dispose();
+    await _androidBridge?.dispose();
+    _androidBridge = null;
   }
 
   void _checkSite(Site site) {
     if (_disposed) throw const SourceFailure('closed', '源引擎已经关闭');
+    if (_bridgeChanging) {
+      throw const SourceFailure('bridge-changing', '引擎连接切换中，请稍后重试');
+    }
     if (site.api.isEmpty) {
       throw const SourceFailure('missing-api', '站点没有配置 API');
     }

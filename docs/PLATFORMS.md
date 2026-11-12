@@ -11,15 +11,20 @@
 | 多文件 ES module `import` | 依原引擎与插件实现 | 发布前先 bundle 成单文件 | 发布前先 bundle 成单文件 |
 | HTML / crypto / 代理与 type=1 JSON 解析器 | 原引擎能力 | 跨平台桥接 | 跨平台桥接 |
 | 同步 JS `req` | 原引擎能力 | worker → loopback → 异步 HTTP(S) | worker → loopback → 异步 HTTP(S) |
-| CatVod/JAR、DEX、Android 插件窗口 | Android 原生实现 | 提取 JAR 内嵌 JS 规则运行；纯 DEX 源明确报 Android 专属 | 提取 JAR 内嵌 JS 规则运行；纯 DEX 源明确报 Android 专属 |
-| 网页嗅探（parse=1 播放页） | WebView 嗅探 | 便携页面嗅探 | 便携页面嗅探 |
+| CatVod JAR 内嵌 JS | 原生加载 | 按显式 manifest 选择 JS 入口 | 按显式 manifest 选择 JS 入口 |
+| CatVod DEX/JAR、Android 插件及 type=2/3 解析 | 本机 Android 引擎 | 可选连接同网 Android 执行，非 Windows 本地 DEX | 可选连接同网 Android 执行，非 iOS 本地 DEX |
+| 网页嗅探（parse=1 播放页） | Android WebView | 原生 WebView2 执行网页 JS，静态提取兜底 | 原生 WKWebView 执行网页 JS，静态提取兜底 |
 | 相机扫码 | Android 插件 | 当前扫码插件无 Windows 原生实现，可手动输入订阅 | iOS 插件，首次主动扫码时申请相机权限 |
 
 能构建、能启动、能导入配置与真实源能播放是不同层级。不同 JS 方言、插件额外宿主 API、网页认证、媒体编解码和第三方服务仍需分别验收；这里没有把跨平台支持等同于任意 Android 插件兼容。同步 JS 请求使用的回环服务属于应用运行时；CI 仅通过受控 loopback fixture 回归 JS HTTP/HTML/crypto 和生命周期，不启动面向局域网的订阅推送服务。
 
-**网页嗅探：**Windows/iOS 的 `parse=1` 播放页由便携嗅探处理：读取页面里 `<video>/<audio>/<source>`、`og:video` 等声明和播放器脚本中的媒体地址，跳过页面自身 URL，逐个用 Range 请求校验 `Content-Type`、`#EXTM3U`、`<MPD`、`ftyp`、TS 同步字节后才交给播放器，并附带 `Referer` 与源请求头。它不执行页面 JavaScript，也不处理需要登录跳转、加密令牌或复杂 JS 计算的页面；这类仍需 Android WebView 或先转成 JS 源。默认最多检查两级页面、24 个候选。
+**网页嗅探：**Windows 的 WebView2 / iOS 的 WKWebView 真正执行播放页 JS，观察 fetch、XHR、网络响应与已加载的媒体 DOM。导航页自身、HTML 登录页、HTTP 错误、blob/data URL 不作为成功资源；返回播放器的地址携带页面 Referer、User-Agent 和当前资源 Cookie。每个原生操作最多 25 秒，退出/切源取消并释放 view。`type=0` 解析器和 `playUrl` 前缀交给浏览器，`type=1` 保留 JSON 解析。原生组件缺失或未命中时使用静态提取兜底；兜底只取最多两级页面、24 个候选，媒体探测最多读取 1024 字节并停止连接，失败不再凭文件扩展名猜成功。完整解析等待期限为 40 秒。Windows 需要 Microsoft Edge WebView2 Runtime；它是系统依赖，不是另行安装的浏览器自动化服务。带交互登录、人机验证、DRM 或私有播放器协议的页面仍需针对具体源验收。
 
-**JAR 源：**Windows/iOS 没有 DEX 运行时。应用会下载 JAR，检查 `classes.dex`，并提取归档里内嵌的 `spider.js` 或 `spider.json` 规则，再用同一套便携 JS 引擎执行；只含 DEX 的 JAR 会明确提示需要 Android，不会伪装成网络错误。JAR 内的 Java 代码、自定义 `jsapi` 扩展类与 Android 插件窗口仍无法执行。
+**JAR 源：**未设置 Android 引擎时，只执行明确声明的内嵌 JS。归档通过中央目录、CRC 和解压限额验证；有 `META-INF/liuguang.json` 时按当前 `site.api` 的映射选择入口，无 manifest 时只兼容根目录精确 `spider.js`，不再执行任意第一个 `.js`。`spider.json` 是元数据或显式入口映射，绝非自动执行的 JS。支持 `site.jar` 优先、仓库 `spider` 回退、相对 URL 与 `;md5;` 校验。归档最多 8 MiB / 2048 条目，单条解压 8 MiB、总解压 32 MiB、JS 4 MiB；超限和损坏均报明确错误。
+
+配置步骤、流式路径与 JAR manifest 格式见 [Android 引擎连接](<ANDROID_ENGINE_BRIDGE.md>)。
+
+**完整 DEX/JAR：**在 Windows/iOS“我的流光 → Android 引擎连接”保存同网 Android 的地址和临时令牌后，JAR 会话、搜索/分类/详情/播放及 type=2/3 解析由该 Android 的原生 CatVod 引擎执行。Windows/iOS 不包含 ART、Android SDK 类库或 JAR 的 JNI 库，桥接不等于本机运行 DEX。需要 Android 同样安装此版本并保持服务页前台；插件弹窗和登录交互发生在 Android，第三方 JAR 的兼容性仍取决于原生 ABI 和所用服务。
 
 **执行期限限制：**固定的 Windows QuickJS DLL 与 iOS JavaScriptCore 桥未暴露可靠的原生硬中断。45 秒是宿主请求的等待期限，不是任意 JS 的硬执行上限；纯 JS 同步死循环不保证被 `Isolate.kill` 打断，极端内容源可能需要重启应用。正常请求取消、正常关闭及受控功能回归已通过，但这不代表硬超时、沙箱隔离或所有脚本兼容。
 
