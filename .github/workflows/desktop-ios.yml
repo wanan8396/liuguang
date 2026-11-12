@@ -56,6 +56,7 @@ jobs:
             Remove-Item -LiteralPath $bridge -Force
           }
       - name: Test dynamic JavaScript page with actual WebView2
+        timeout-minutes: 15
         run: |
           flutter test integration_test/native_web_sniffer_test.dart -d windows --no-pub --timeout 120s
           if ($LASTEXITCODE -ne 0) { throw 'Dynamic WebView2 sniff regression failed' }
@@ -112,6 +113,7 @@ jobs:
       - name: Test system JavaScriptCore with controlled fixtures
         run: flutter test --no-pub --timeout 90s test/engine/portable_js_engine_test.dart
       - name: Test dynamic JavaScript page with actual WKWebView
+        timeout-minutes: 25
         run: |
           set -euo pipefail
           simulator=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; ds=json.load(sys.stdin)["devices"]; print(next(d["udid"] for r,items in ds.items() if "iOS" in r for d in items if d["name"].startswith("iPhone")))')
